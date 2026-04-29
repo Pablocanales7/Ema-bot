@@ -119,7 +119,7 @@ def resolve_trade_amount(balance):
     bal_num = balance['available'] if isinstance(balance, dict) else balance
     if TRADE_PCT > 0 and bal_num is not None:
         ta = round(bal_num * TRADE_PCT, 2)
-        print(f' [Sizing] Dinámico: ${ta}')
+        print(f' [Sizing] Dinamico: ${ta}')
         return ta
     return TRADE_AMOUNT
 
@@ -134,9 +134,9 @@ def set_leverage_binance(symbol):
         if 'code' in data and data['code'] < 0:
             print(f' [Leverage] Error {symbol}: {data}')
         else:
-            print(f' [Leverage] {symbol} → {LEVERAGE}x OK')
+            print(f' [Leverage] {symbol} -> {LEVERAGE}x OK')
     except Exception as exc:
-        print(f' [Leverage] Excepción {symbol}: {exc}')
+        print(f' [Leverage] Excepcion {symbol}: {exc}')
 
 def market_order(symbol, side, qty):
     if not API_KEY:
@@ -151,7 +151,7 @@ def market_order(symbol, side, qty):
             print(f' [Order] Error {symbol} {side}: {data}')
         return data
     except Exception as exc:
-        print(f' [Order] Excepción {symbol}: {exc}')
+        print(f' [Order] Excepcion {symbol}: {exc}')
         return {}
 
 def fetch_candles(symbol, aggregate=4, limit=200):
@@ -288,13 +288,13 @@ def volume_confirmed(vols):
     last = vols[-1]
     ok = last >= avg * VOL_MULT
     ratio = round(last / (avg or 1e-9), 2)
-    print(f' [Vol] {ratio}x promedio — {"✅" if ok else "⚠️ bajo"}')
+    print(f' [Vol] {ratio}x promedio - {"OK" if ok else "bajo"}')
     return ok, ratio
 
 def daily_loss_exceeded(state, today):
     total_pnl = sum(state.get(p['symbol'], {}).get('session_pnl', 0.0) for p in PAIRS if state.get(p['symbol'], {}).get('trades_date') == today)
     if total_pnl <= DAILY_LOSS_LIMIT:
-        print(f' [DAILY LOSS] PnL: ${round(total_pnl,2)} ≤ límite ${DAILY_LOSS_LIMIT}')
+        print(f' [DAILY LOSS] PnL: ${round(total_pnl,2)} <= limite ${DAILY_LOSS_LIMIT}')
         return True, total_pnl
     return False, total_pnl
 
@@ -323,7 +323,7 @@ def build_msg(parts):
     return chr(10).join(parts)
 
 def send_session_report(state, now_str, balance, today):
-    lines = [f'📊 REPORTE — {now_str}', '']
+    lines = [f'REPORTE - {now_str}', '']
     total_pnl = 0.0
     for p in PAIRS:
         ps = state.get(p['symbol'], {})
@@ -334,15 +334,15 @@ def send_session_report(state, now_str, balance, today):
         adx = ps.get('adx', 0)
         pnl = ps.get('session_pnl', 0.0)
         total_pnl += pnl if ps.get('trades_date') == today else 0
-        icon = '🟢' if pos == 'LONG' else ('🔴' if pos == 'SHORT' else '⚪')
+        icon = 'LONG' if pos == 'LONG' else ('SHORT' if pos == 'SHORT' else 'FLAT')
         s = '+' if pnl >= 0 else ''
         lines.append(f"{icon} {p['fsym']} ${price} RSI:{rsi} ADX:{adx} | {sig} | PnL:{s}{round(pnl,2)}")
     lines.append('')
     s = '+' if total_pnl >= 0 else ''
-    lines.append(f'💰 PnL hoy: {s}{round(total_pnl,2)} USDT')
-    lines.append(f'🚨 Límite diario: ${DAILY_LOSS_LIMIT}')
+    lines.append(f'PnL hoy: {s}{round(total_pnl,2)} USDT')
+    lines.append(f'Limite diario: ${DAILY_LOSS_LIMIT}')
     if isinstance(balance, dict):
-        lines.append(f"💼 Balance: ${balance['total']} | Libre: ${balance['available']} | Margen: {balance['margin_pct']}%")
+        lines.append(f"Balance: ${balance['total']} | Libre: ${balance['available']} | Margen: {balance['margin_pct']}%")
     send_msg(build_msg(lines))
 
 def open_long(pair, ps, price, sl, tp, ta):
@@ -354,9 +354,9 @@ def open_long(pair, ps, price, sl, tp, ta):
     oid = res.get('orderId')
     if oid:
         ps.update({'position': 'LONG', 'entry_price': price, 'entry_qty': qty, 'initial_sl': sl, 'tp_target': tp, 'trailing_sl': sl, 'partial_closed': False, 'trades_today': ps.get('trades_today', 0) + 1, 'trade_amount_used': ta})
-        send_msg(build_msg([f'🟢 LONG abierto — {fsym}/USDT', f' Qty: {qty} @ ${round(price,2)}', f' Monto: ${ta} | Lev: {LEVERAGE}x', f' SL: ${round(sl,2)} | TP: ${round(tp,2)}', f' 50% TP: ${round(halfway,2)} | ID: {oid}']))
+        send_msg(build_msg([f'LONG abierto - {fsym}/USDT', f' Qty: {qty} @ ${round(price,2)}', f' Monto: ${ta} | Lev: {LEVERAGE}x', f' SL: ${round(sl,2)} | TP: ${round(tp,2)}', f' 50% TP: ${round(halfway,2)} | ID: {oid}']))
     else:
-        send_msg(f"❌ ERROR BUY {fsym}: {res.get('msg', str(res))}")
+        send_msg(f"ERROR BUY {fsym}: {res.get('msg', str(res))}")
 
 def close_position(pair, ps, price, reason, partial=False):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
@@ -374,7 +374,7 @@ def close_position(pair, ps, price, reason, partial=False):
     pnl_u = ta * factor * LEVERAGE * pnl_pct / 100
     ps['session_pnl'] = ps.get('session_pnl', 0) + pnl_u
     if oid:
-        send_msg(build_msg([f'LONG cerrado — {fsym}/USDT', f' Razón: {reason}', f' SELL {sell_qty} @ ${round(price,2)}', f' PnL: {round(pnl_u,2)} USDT', f' ID: {oid}']))
+        send_msg(build_msg([f'LONG cerrado - {fsym}/USDT', f' Razon: {reason}', f' SELL {sell_qty} @ ${round(price,2)}', f' PnL: {round(pnl_u,2)} USDT', f' ID: {oid}']))
         if not partial:
             ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None, 'initial_sl': None, 'tp_target': None, 'trailing_sl': None, 'partial_closed': False, 'trade_amount_used': None})
 
@@ -387,9 +387,9 @@ def open_short(pair, ps, price, sl, tp, ta):
     oid = res.get('orderId')
     if oid:
         ps.update({'position': 'SHORT', 'entry_price': price, 'entry_qty': qty, 'initial_sl': sl, 'tp_target': tp, 'trailing_sl': sl, 'partial_closed': False, 'trades_today': ps.get('trades_today', 0) + 1, 'trade_amount_used': ta})
-        send_msg(build_msg([f'🔴 SHORT abierto — {fsym}/USDT', f' Qty: {qty} @ ${round(price,2)}', f' Monto: ${ta} | Lev: {LEVERAGE}x', f' SL: ${round(sl,2)} | TP: ${round(tp,2)}', f' 50% TP: ${round(halfway,2)} | ID: {oid}']))
+        send_msg(build_msg([f'SHORT abierto - {fsym}/USDT', f' Qty: {qty} @ ${round(price,2)}', f' Monto: ${ta} | Lev: {LEVERAGE}x', f' SL: ${round(sl,2)} | TP: ${round(tp,2)}', f' 50% TP: ${round(halfway,2)} | ID: {oid}']))
     else:
-        send_msg(f"❌ ERROR SHORT {fsym}: {res.get('msg', str(res))}")
+        send_msg(f"ERROR SHORT {fsym}: {res.get('msg', str(res))}")
 
 def close_short(pair, ps, price, reason, partial=False):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
@@ -407,7 +407,7 @@ def close_short(pair, ps, price, reason, partial=False):
     pnl_u = ta * factor * LEVERAGE * pnl_pct / 100
     ps['session_pnl'] = ps.get('session_pnl', 0) + pnl_u
     if oid:
-        send_msg(build_msg([f'SHORT cerrado — {fsym}/USDT', f' Razón: {reason}', f' BUY {buy_qty} @ ${round(price,2)}', f' PnL: {round(pnl_u,2)} USDT', f' ID: {oid}']))
+        send_msg(build_msg([f'SHORT cerrado - {fsym}/USDT', f' Razon: {reason}', f' BUY {buy_qty} @ ${round(price,2)}', f' PnL: {round(pnl_u,2)} USDT', f' ID: {oid}']))
         if not partial:
             ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None, 'initial_sl': None, 'tp_target': None, 'trailing_sl': None, 'partial_closed': False, 'trade_amount_used': None})
 
@@ -427,13 +427,13 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
     if not partial and price >= halfway:
         ps['partial_closed'] = True
         ps['trailing_sl'] = max(trail, entry)
-        send_msg(build_msg([f'📍 50% TP LONG — {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | SL → BE: ${round(entry,2)}']))
+        send_msg(build_msg([f'50% TP LONG - {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | SL -> BE: ${round(entry,2)}']))
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, '50% TP', partial=True)
         return True
     if price <= trail:
         ps['last_sl_time'] = now_dt.isoformat()
-        send_msg(build_msg([f'🛑 TRAILING SL LONG — {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | Trail: ${round(trail,2)}']))
+        send_msg(build_msg([f'TRAILING SL LONG - {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | Trail: ${round(trail,2)}']))
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, 'Trailing SL')
         else:
@@ -457,13 +457,13 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
     if not partial and price <= halfway:
         ps['partial_closed'] = True
         ps['trailing_sl'] = min(trail, entry)
-        send_msg(build_msg([f'📍 50% TP SHORT — {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | SL → BE: ${round(entry,2)}']))
+        send_msg(build_msg([f'50% TP SHORT - {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | SL -> BE: ${round(entry,2)}']))
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, '50% TP', partial=True)
         return True
     if price >= trail:
         ps['last_sl_time'] = now_dt.isoformat()
-        send_msg(build_msg([f'🛑 TRAILING SL SHORT — {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | Trail: ${round(trail,2)}']))
+        send_msg(build_msg([f'TRAILING SL SHORT - {pair["fsym"]}/USDT', f' Precio: ${round(price,2)} | Trail: ${round(trail,2)}']))
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, 'Trailing SL')
         else:
@@ -494,7 +494,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         price_change_pct = abs(closes[-1] - closes[-4]) / closes[-4]
         if price_change_pct >= MOMENTUM_THRESHOLD and la_adx >= MOMENTUM_ADX_MIN:
             momentum_detected = True
-            print(f'  ⚡ [MOMENTUM] {round(price_change_pct*100,2)}% | ADX:{round(la_adx,1)}')
+            print(f'  [MOMENTUM] {round(price_change_pct*100,2)}% | ADX:{round(la_adx,1)}')
 
     sl_long = price - la * 1.5
     tp_long = price + la * 3.0
@@ -516,7 +516,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         ep = ps['entry_price'] or price
         ta_u = ps.get('trade_amount_used', TRADE_AMOUNT)
         pnl_u = ta_u * LEVERAGE * (price - ep) / ep
-        send_msg(build_msg([f'🔴 CRUCE BAJISTA — {fsym}/USDT 4H', '❌ CERRAR POSICIÓN LONG', f'📊 Precio: ${round(price,2)} | PnL est.: {round(pnl_u,2)} USDT']))
+        send_msg(build_msg([f'CRUCE BAJISTA - {fsym}/USDT 4H', 'CERRAR POSICION LONG', f'Precio: ${round(price,2)} | PnL est.: {round(pnl_u,2)} USDT']))
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, 'Cruce bajista')
         else:
@@ -526,7 +526,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         ep = ps['entry_price'] or price
         ta_u = ps.get('trade_amount_used', TRADE_AMOUNT)
         pnl_u = ta_u * LEVERAGE * (ep - price) / ep
-        send_msg(build_msg([f'🟢 CRUCE ALCISTA — {fsym}/USDT 4H', '❌ CERRAR POSICIÓN SHORT', f'📊 Precio: ${round(price,2)} | PnL est.: {round(pnl_u,2)} USDT']))
+        send_msg(build_msg([f'CRUCE ALCISTA - {fsym}/USDT 4H', 'CERRAR POSICION SHORT', f'Precio: ${round(price,2)} | PnL est.: {round(pnl_u,2)} USDT']))
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, 'Cruce alcista')
         else:
@@ -552,23 +552,23 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
 
     parts = None
     if sig == 'BUY':
-        dec_txt = '✅ ABRIR LONG' if btc_ok_long else '⛔ NO OPERAR — BTC filtrado'
-        parts = [f'🟢 SEÑAL LONG — {fsym}/USDT 4H', '', dec_txt, '', f'📊 ${round(price,2)} | EMA21: ${round(le21,2)} | EMA89: ${round(le89,2)}', f'📐 RSI: {round(lr,1)} (mín {RSI_MIN}) | ADX: {round(la_adx,1)}', '', '━━━ SETUP ━━━', f'🛑 SL: ${round(sl_long,2)} ({sl_pct_l}%) → -${pnl_sl_l}', f'🎯 TP: ${round(tp_long,2)} (+{tp_pct_l}%) → +${pnl_tp_l}', f'📍 50%: ${round(halfway_l,2)} | 🔄 Trailing activo', f'⚡ Lev: {LEVERAGE}x | ${ta_now} | R:R 1:2 | {now_str}']
+        dec_txt = 'ABRIR LONG' if btc_ok_long else 'NO OPERAR - BTC filtrado'
+        parts = [f'SENAL LONG - {fsym}/USDT 4H', '', dec_txt, '', f'${round(price,2)} | EMA21: ${round(le21,2)} | EMA89: ${round(le89,2)}', f'RSI: {round(lr,1)} (min {RSI_MIN}) | ADX: {round(la_adx,1)}', '', 'SETUP', f'SL: ${round(sl_long,2)} ({sl_pct_l}%) -> -${pnl_sl_l}', f'TP: ${round(tp_long,2)} (+{tp_pct_l}%) -> +${pnl_tp_l}', f'50%: ${round(halfway_l,2)} | Trailing activo', f'Lev: {LEVERAGE}x | ${ta_now} | R:R 1:2 | {now_str}']
     elif sig == 'SELL':
-        dec_txt = '✅ ABRIR SHORT' if btc_ok_short else '⛔ NO OPERAR — BTC filtrado'
-        parts = [f'🔴 SEÑAL SHORT — {fsym}/USDT 4H', '', dec_txt, '', f'📊 ${round(price,2)} | EMA21: ${round(le21,2)} | EMA89: ${round(le89,2)}', f'📐 RSI: {round(lr,1)} (máx {RSI_MAX}) | ADX: {round(la_adx,1)}', '', '━━━ SETUP ━━━', f'🛑 SL: ${round(sl_short,2)} (+{sl_pct_s}%) → -${pnl_sl_s}', f'🎯 TP: ${round(tp_short,2)} ({tp_pct_s}%) → +${pnl_tp_s}', f'📍 50%: ${round(halfway_s,2)} | 🔄 Trailing activo', f'⚡ Lev: {LEVERAGE}x | ${ta_now} | R:R 1:2 | {now_str}']
+        dec_txt = 'ABRIR SHORT' if btc_ok_short else 'NO OPERAR - BTC filtrado'
+        parts = [f'SENAL SHORT - {fsym}/USDT 4H', '', dec_txt, '', f'${round(price,2)} | EMA21: ${round(le21,2)} | EMA89: ${round(le89,2)}', f'RSI: {round(lr,1)} (max {RSI_MAX}) | ADX: {round(la_adx,1)}', '', 'SETUP', f'SL: ${round(sl_short,2)} (+{sl_pct_s}%) -> -${pnl_sl_s}', f'TP: ${round(tp_short,2)} ({tp_pct_s}%) -> +${pnl_tp_s}', f'50%: ${round(halfway_s,2)} | Trailing activo', f'Lev: {LEVERAGE}x | ${ta_now} | R:R 1:2 | {now_str}']
     elif sig == 'WAIT_RSI':
         falta = round(RSI_MIN - lr, 1)
-        parts = [f'🟡 CRUCE ALCISTA — {fsym}/USDT 4H', '⏳ Esperar RSI', f'📐 RSI: {round(lr,1)} (faltan +{falta} para >{RSI_MIN})', f'🕯 Velas desde cruce: {vcr} | ADX: {round(la_adx,1)}', f'🛑 SL ref: ${round(sl_long,2)} | 🎯 TP ref: ${round(tp_long,2)}', f'⏰ {now_str}']
+        parts = [f'CRUCE ALCISTA - {fsym}/USDT 4H', 'Esperar RSI', f'RSI: {round(lr,1)} (faltan +{falta} para >{RSI_MIN})', f'Velas desde cruce: {vcr} | ADX: {round(la_adx,1)}', f'SL ref: ${round(sl_long,2)} | TP ref: ${round(tp_long,2)}', f'{now_str}']
     elif sig == 'WAIT_RSI_SHORT':
         falta = round(lr - RSI_MAX, 1)
-        parts = [f'🟠 CRUCE BAJISTA — {fsym}/USDT 4H', '⏳ Esperar RSI', f'📐 RSI: {round(lr,1)} (sobran {falta} para <{RSI_MAX})', f'🕯 Velas desde cruce: {vcr} | ADX: {round(la_adx,1)}', f'🛑 SL ref: ${round(sl_short,2)} | 🎯 TP ref: ${round(tp_short,2)}', f'⏰ {now_str}']
+        parts = [f'CRUCE BAJISTA - {fsym}/USDT 4H', 'Esperar RSI', f'RSI: {round(lr,1)} (sobran {falta} para <{RSI_MAX})', f'Velas desde cruce: {vcr} | ADX: {round(la_adx,1)}', f'SL ref: ${round(sl_short,2)} | TP ref: ${round(tp_short,2)}', f'{now_str}']
     elif sig == 'LONG_ACTIVE':
-        dec_txt = f'⚡ Entrada tardía válida ({vcr} velas)' if vcr <= MAX_CANDLES_LATE else f'⏸ Cruce antiguo ({vcr} velas)'
-        parts = [f'🔵 LARGO ACTIVO — {fsym}/USDT 4H', dec_txt, f'📊 ${round(price,2)} | RSI: {round(lr,1)} | ADX: {round(la_adx,1)}', f'🛑 SL: ${round(sl_long,2)} | 🎯 TP: ${round(tp_long,2)}', f'⏰ {now_str}']
+        dec_txt = f'Entrada tardia valida ({vcr} velas)' if vcr <= MAX_CANDLES_LATE else f'Cruce antiguo ({vcr} velas)'
+        parts = [f'LARGO ACTIVO - {fsym}/USDT 4H', dec_txt, f'${round(price,2)} | RSI: {round(lr,1)} | ADX: {round(la_adx,1)}', f'SL: ${round(sl_long,2)} | TP: ${round(tp_long,2)}', f'{now_str}']
     elif sig == 'SHORT_ACTIVE':
-        dec_txt = f'⚡ Entrada tardía válida ({vcr} velas)' if vcr <= MAX_CANDLES_LATE else f'⏸ Cruce antiguo ({vcr} velas)'
-        parts = [f'🟠 CORTO ACTIVO — {fsym}/USDT 4H', dec_txt, f'📊 ${round(price,2)} | RSI: {round(lr,1)} | ADX: {round(la_adx,1)}', f'🛑 SL: ${round(sl_short,2)} | 🎯 TP: ${round(tp_short,2)}', f'⏰ {now_str}']
+        dec_txt = f'Entrada tardia valida ({vcr} velas)' if vcr <= MAX_CANDLES_LATE else f'Cruce antiguo ({vcr} velas)'
+        parts = [f'CORTO ACTIVO - {fsym}/USDT 4H', dec_txt, f'${round(price,2)} | RSI: {round(lr,1)} | ADX: {round(la_adx,1)}', f'SL: ${round(sl_short,2)} | TP: ${round(tp_short,2)}', f'{now_str}']
 
     if parts is None:
         ps['last_signal'] = sig
@@ -643,7 +643,7 @@ def main():
     balance = get_futures_balance() if API_KEY else None
     loss_exceeded, daily_pnl = daily_loss_exceeded(state, today)
     if loss_exceeded:
-        send_msg(build_msg(['🚨 STOP DIARIO ACTIVADO', f'PnL del día: ${round(daily_pnl,2)}', f'Límite: ${DAILY_LOSS_LIMIT}', f'Bot bloqueado hasta mañana. | {now_str}']))
+        send_msg(build_msg(['STOP DIARIO ACTIVADO', f'PnL del dia: ${round(daily_pnl,2)}', f'Limite: ${DAILY_LOSS_LIMIT}', f'Bot bloqueado hasta manana. | {now_str}']))
         save_state(state, now_str, balance)
         return
 
@@ -654,7 +654,8 @@ def main():
 
     for pair in PAIRS:
         sym = pair['symbol']
-        print('-> ' + sym)
+        print('
+-> ' + sym)
         ps = get_pair_state(state, sym)
         if ps.get('position') == 'FLAT' and open_now >= MAX_OPEN_POS:
             print(' SALTADO: MAX_OPEN_POSITIONS')
@@ -664,11 +665,13 @@ def main():
             state[sym] = process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state)
         except Exception as exc:
             print(f' ERROR {sym}: {exc}')
-            send_msg(f'❌ Error {sym}: {exc}')
+            send_msg(f'Error {sym}: {exc}')
         time.sleep(2)
 
     save_state(state, now_str, balance)
     send_session_report(state, now_str, balance, today)
-    print('Completado — ' + now_str)
+    print('
+Completado - ' + now_str)
+
 if __name__ == '__main__':
-     main()
+    main()
