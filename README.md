@@ -7,5 +7,5 @@ Bot de trading automático para Binance Futures.
 - Trailing Stop Loss dinámico
 - Gestión de riesgo avanzada
 - Notificaciones Telegram
-## Test Auto-Update
+## Test Auto-Update. 
 Última actualización: 28 de Abril 2026
