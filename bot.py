@@ -173,24 +173,48 @@ def market_order(symbol, side, qty):
         print(f' [Order] Excepción {symbol}: {exc}')
         return {}
 
-def fetch_candles(symbol, aggregate=4, limit=200):
-    url = f'https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=USDT&limit={limit}&aggregate={aggregate}&e=Binance'
-    r = requests.get(url, timeout=15)
-    r.raise_for_status()
-    raw = r.json()['Data']['Data']
-    return {
-        'closes': [float(c['close']) for c in raw],
-        'highs': [float(c['high']) for c in raw],
-        'lows': [float(c['low']) for c in raw],
-        'vols': [float(c['volumeto']) for c in raw],
-    }
+def fetchcandles(symbol, aggregate=4, limit=200):
+    url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=USDT&limit={limit}&aggregate={aggregate}&e=Binance"
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        
+        # 🛡️ Validar estructura de respuesta
+        if 'Data' not in data or 'Data' not in data['Data']:
+            print(f"⚠️ [{symbol}] API sin datos válidos. Reintentando en próximo ciclo.")
+            return [], [], [], []
+        
+        raw = data['Data']['Data']
+        
+        # 🛡️ Validar que hay datos suficientes
+        if len(raw) < 50:
+            print(f"⚠️ [{symbol}] Datos insuficientes ({len(raw)} velas)")
+            return [], [], [], []
+            
+        return [float(c['close']) for c in raw], [float(c['high']) for c in raw], \
+               [float(c['low']) for c in raw], [float(c['volumeto']) for c in raw]
+    except Exception as e:
+        print(f"❌ [{symbol}] Error fetchcandles: {e}")
+        return [], [], [], []
 
-def fetch_daily_candles(symbol, limit=100):
-    url = f'https://min-api.cryptocompare.com/data/v2/histoday?fsym={symbol}&tsym=USDT&limit={limit}&e=Binance'
-    r = requests.get(url, timeout=15)
-    r.raise_for_status()
-    raw = r.json()['Data']['Data']
-    return {'closes': [float(c['close']) for c in raw]}
+def fetchdailycandles(symbol, limit=100):
+    url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym={symbol}&tsym=USDT&limit={limit}&e=Binance"
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        
+        # 🛡️ Validar estructura
+        if 'Data' not in data or 'Data' not in data['Data']:
+            print(f"⚠️ [{symbol}] API diaria sin datos válidos")
+            return []
+        
+        raw = data['Data']['Data']
+        return [float(c['close']) for c in raw]
+    except Exception as e:
+        print(f"❌ [{symbol}] Error fetchdailycandles: {e}")
+        return []
 
 def calc_ema(data, period):
     k = 2 / (period + 1)
@@ -283,24 +307,38 @@ def velas_desde_cruce(ema21, ema89, max_look=10):
 
 def btc_is_bullish():
     try:
-        c = fetch_candles('BTC', aggregate=TIMEFRAME_HOURS)
-        e21 = calc_ema(c['closes'], 21)
-        e89 = calc_ema(c['closes'], 89)
+        closes, highs, lows, vols = fetchcandles('BTC')
+        
+        if not closes or len(closes) < 100:
+            print(" [BTC] Sin datos, asumiendo alcista")
+            return True
+            
+        e21 = calc_ema(closes, 21)
+        e89 = calc_ema(closes, 89)
         bull = (e21[-1] or 0) > (e89[-1] or 0)
-        print(' [BTC] ' + ('ALCISTA' if bull else 'BAJISTA'))
+        print(f" [BTC] {'ALCISTA' if bull else 'BAJISTA'}")
         return bull
     except Exception as exc:
-        print(f' [BTC] Error: {exc}')
+        print(f" [BTC] Error: {exc}")
         return True
 
 def pair_daily_is_bullish(fsym):
     try:
-        c = fetch_daily_candles(fsym)
-        e21 = calc_ema(c['closes'], 21)
-        e89 = calc_ema(c['closes'], 89)
-        return (e21[-1] or 0) > (e89[-1] or 0)
-    except Exception:
+        closes = fetchdailycandles(fsym)
+        
+        if not closes or len(closes) < 100:
+            print(f" [1D {fsym}] Sin datos")
+            return True
+            
+        e21 = calc_ema(closes, 21)
+        e89 = calc_ema(closes, 89)
+        bull = (e21[-1] or 0) > (e89[-1] or 0)
+        print(f" [1D {fsym}] {'ALCISTA' if bull else 'BAJISTA'}")
+        return bull
+    except Exception as exc:
+        print(f" [1D {fsym}] Error: {exc}")
         return True
+
 # ── NUEVO: Cierre por cambio de tendencia BTC ────────────────────────────────
 def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now_dt):
     """
@@ -647,8 +685,13 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         ps['trades_today'] = 0
         ps['trades_date'] = today
 
-    c = fetch_candles(fsym, aggregate=TIMEFRAME_HOURS)
-    closes, highs, lows, vols = c['closes'], c['highs'], c['lows'], c['vols']
+    closes, highs, lows, vols = fetchcandles(fsym)
+
+    # 🛡️ Si no hay datos, saltar este par
+    if not closes or len(closes) < 100:
+        print(f"⚠️ [{sym}] Sin datos suficientes, saltando...")
+        return ps
+
     price = closes[-1]
     e21 = calc_ema(closes, 21)
     e89 = calc_ema(closes, 89)
