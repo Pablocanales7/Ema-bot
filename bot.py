@@ -578,9 +578,9 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             print(f'  ⚡ [MOMENTUM] {round(price_change_pct*100,2)}% | ADX:{round(la_adx,1)}')
 
     sl_long = price - la * 1.5
-    tp_long = price + la * 3.0
+    tp_long = price + la * 2.5
     sl_short = price + la * 1.5
-    tp_short = price - la * 3.0
+    tp_short = price - la * 2.5
 
     sig = get_signal(e21, e89, rsi14, RSI_MIN, RSI_MAX)
     vcr = velas_desde_cruce(e21, e89)
