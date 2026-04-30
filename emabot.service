@@ -1,0 +1,16 @@
+[Unit]
+Description=Ema Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=raspy
+WorkingDirectory=/home/raspy/emabot
+Environment="PATH=/home/raspy/emabot/venv/bin:/usr/bin:/usr/local/bin"
+EnvironmentFile=/home/raspy/emabot/.env
+ExecStart=/home/raspy/emabot/venv/bin/python3 -u bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
