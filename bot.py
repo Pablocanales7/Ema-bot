@@ -4,6 +4,10 @@ from datetime import datetime, timezone, timedelta
 import signal
 import sys
 
+
+cycle_count = 0
+REPORT_EVERY_N_CYCLES = 6  # Reportar cada 6 ciclos (6 × 5min = 30 min)
+
 # Control de loop
 running = True
 
@@ -840,16 +844,15 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     return ps
 
 def run_bot_cycle():
-    """
-    Ejecuta un ciclo completo del bot.
-    Retorna True si hay posiciones abiertas, False si no.
-    """
+    """Ejecuta un ciclo completo del bot"""
+    global cycle_count
+    
     now_dt = datetime.now(timezone.utc)
     today = now_dt.strftime('%Y-%m-%d')
     now_str = now_dt.strftime('%Y-%m-%d %H:%M UTC')
-
-    sizing = f'{TRADE_PCT}%' if TRADE_PCT > 0 else f'${TRADE_AMOUNT}'
-
+    
+    sizing = f'{TRADE_PCT*100:.1f}%' if TRADE_PCT > 0 else f'${TRADE_AMOUNT}'
+    
     print('=' * 55)
     print(f' EMA Bot v10.2 + Loop | {now_str}')
     print(f' Sizing: {sizing} | Lev: {LEVERAGE}x')
@@ -858,49 +861,63 @@ def run_bot_cycle():
     print(f' DailyLoss: ${DAILY_LOSS_LIMIT} | SL Cooldown: {SL_COOLDOWN_HOURS}h')
     print(f' MTF: {USE_MTF} | VolFilter: {USE_VOLUME_FILTER}')
     print('=' * 55)
-
+    
     state = load_state()
     balance = get_futures_balance() if API_KEY else None
-
+    
+    # Check daily loss
     loss_exceeded, daily_pnl = daily_loss_exceeded(state, today)
     if loss_exceeded:
-        send_msg(build_msg([
-            '🚨 STOP DIARIO ACTIVADO',
-            f'PnL del día: ${round(daily_pnl,2)}',
-            f'Límite: ${DAILY_LOSS_LIMIT}',
-            f'Bot bloqueado hasta mañana. | {now_str}',
+        sendmsg(build_msg([
+            '🛑 STOP DIARIO ACTIVADO',
+            f'PnL del día: {round(daily_pnl,2)}',
+            f'Límite: {DAILY_LOSS_LIMIT}',
+            f'Bot bloqueado hasta mañana. {now_str}'
         ]))
         save_state(state, now_str, balance)
-        return False  # No hay posiciones activas
-
+        return False
+    
     print('[Filtro BTC 4H]')
     btc_bull = btc_is_bullish()
+    
     open_now = count_open_positions(state)
     print(f'[Posiciones abiertas: {open_now}/{MAX_OPEN_POS}]')
-
+    
     for pair in PAIRS:
         sym = pair['symbol']
-        print(chr(10) + '-> ' + sym)
+        print(f'\\n-> {sym}')
         ps = get_pair_state(state, sym)
+        
         if ps.get('position') == 'FLAT' and open_now >= MAX_OPEN_POS:
-            print('  SALTADO: MAX_OPEN_POSITIONS')
+            print(' [SALTADO MAX_OPEN_POSITIONS]')
             state[sym] = ps
             continue
+        
         try:
             state[sym] = process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state)
         except Exception as exc:
-            print(f'  ERROR {sym}: {exc}')
-            send_msg(f'❌ Error {sym}: {exc}')
-            time.sleep(2)
-
+            print(f' [ERROR {sym}] {exc}')
+            sendmsg(f'❌ Error {sym}: {exc}')
+        
+        time.sleep(2)
+    
     save_state(state, now_str, balance)
-    send_session_report(state, now_str, balance, today)
-    print(chr(10) + '✓ Completado — ' + now_str)
-
+    
+    # 🆕 INCREMENTAR CONTADOR Y ENVIAR REPORTE
+    cycle_count += 1
+    
+    if cycle_count >= REPORT_EVERY_N_CYCLES:
+        send_session_report(state, now_str, balance, today)
+        cycle_count = 0  # Reset contador
+        print(f'\\n📊 Reporte enviado (ciclo {REPORT_EVERY_N_CYCLES})')
+    else:
+        print(f'\\n📊 Próximo reporte en {REPORT_EVERY_N_CYCLES - cycle_count} ciclos (~{(REPORT_EVERY_N_CYCLES - cycle_count)*5} min)')
+    
+    print(f'\\n✓ Completado — {now_str}')
+    
     # Retornar si hay posiciones abiertas
     has_positions = count_open_positions(state) > 0
     return has_positions
-
 
 def main():
     """Loop principal con frecuencia inteligente"""
