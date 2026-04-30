@@ -466,95 +466,34 @@ def build_msg(parts):
 
 # ── Telegram: Reporte de sesión (mejorado v2) ────────────────────────
 def send_session_report(state, nowstr, balance, today):
-    """
-    Envía reporte de sesión con lógica inteligente:
-    - Si hay posiciones: cada 2 ciclos (cada ~10 min = 2x5min)
-    - Si no hay posiciones: cada 6 ciclos (cada ~30 min = 6x5min)
-
-    IMPORTANTE: Como ahora el bot corre cada 5 min con posiciones,
-    ajustamos la frecuencia para reportar cada ~30 min efectivos.
-    """
-    # Verificar si hay posiciones abiertas
-    has_positions = any(
-        state.get(p['symbol'], {}).get('position', 'FLAT') != 'FLAT'
-        for p in PAIRS
-    )
-
-    # Control de frecuencia
-    if has_positions:
-        # Con posiciones: reportar cada 6 ciclos (6 x 5min = 30 min)
-        cycle_count = state.get('report_cycle_count', 0) + 1
-        state['report_cycle_count'] = cycle_count
-
-        if cycle_count % 6 != 0:
-            return
-    else:
-        # Sin posiciones: reportar cada 6 ciclos también (30 min)
-        # porque ahora corre cada 30 min sin posiciones
-        cycle_count = state.get('report_cycle_count', 0) + 1
-        state['report_cycle_count'] = cycle_count
-
-        if cycle_count % 1 != 0:  # Cada ciclo (que ya es 30 min)
-            return
-
+    """Envía reporte de sesión"""
     lines = [f'📊 REPORTE — {nowstr}']
     totalpnl = 0.0
-    open_count = 0
-
+    
     for p in PAIRS:
         ps = state.get(p['symbol'], {})
         pos = ps.get('position', 'FLAT')
-
-        # ⭐ IMPORTANTE: Obtener precio ACTUAL, no el guardado
-        # El precio guardado es del último ciclo completo
-        current_price = ps.get('price', 0)  # Precio actual del último check
-
-        pnl = ps.get('session_pnl', 0.0)
-        totalpnl += pnl if ps.get('trades_date') == today else 0
-
-        # Solo mostrar detalles de posiciones abiertas
-        if pos != 'FLAT':
-            open_count += 1
-            entry = ps.get('entry_price', 0)
-
-            if pos == 'LONG':
-                pnl_pct = ((current_price - entry) / entry * 100) if entry else 0
-                icon = '🟢'
-            else:  # SHORT
-                pnl_pct = ((entry - current_price) / entry * 100) if entry else 0
-                icon = '🔴'
-
-            s = '+' if pnl >= 0 else ''
-            lines.append(
-                f'{icon} {p["fsym"]} {pos} @ ${round(entry,2)} → ${round(current_price,2)} '
-                f'({pnl_pct:+.2f}%) | PnL: {s}{round(pnl,2)} USDT'
-            )
-
-    # Si no hay posiciones, mostrar señales activas
-    if open_count == 0:
-        lines.append('⚪ Sin posiciones abiertas')
-        active_signals = []
-        for p in PAIRS:
-            ps = state.get(p['symbol'], {})
-            sig = ps.get('signal', 'WAIT')
-            if sig in ['BUY', 'SELL', 'LONG_ACTIVE', 'SHORT_ACTIVE']:
-                active_signals.append(f'{p["fsym"]}: {sig}')
-
-        if active_signals:
-            lines.append(f'📡 Señales: {", ".join(active_signals[:3])}')
-
-    # PnL del día
+        sig = ps.get('signal', 'WAIT')
+        price = ps.get('price', 0)
+        rsi = ps.get('rsi', 0)
+        adx = ps.get('adx', 0)
+        pnl = ps.get('sessionpnl', 0.0)
+        
+        if ps.get('tradesdate') == today:
+            totalpnl += pnl
+        
+        icon = '🟢' if pos == 'LONG' else '🔴' if pos == 'SHORT' else '⚪'
+        s = '+' if pnl >= 0 else ''
+        lines.append(f'{icon} {p["fsym"]}: ${price} | RSI:{rsi} | ADX:{adx} | {sig} | PnL:{s}{round(pnl,2)}')
+    
     s = '+' if totalpnl >= 0 else ''
-    lines.append(f'💵 PnL hoy: {s}{round(totalpnl,2)} USDT | Límite: {DAILY_LOSS_LIMIT}')
-
-    # Balance
+    lines.append(f'📊 PnL hoy: {s}{round(totalpnl,2)} USDT')
+    lines.append(f'💰 Límite diario: {DAILY_LOSS_LIMIT}')
+    
     if isinstance(balance, dict):
-        lines.append(
-            f'💰 ${balance["total"]} (Libre: ${balance["available"]}, '
-            f'Margen: {balance["margin_pct"]}%)'
-        )
-
-    send_msg(build_msg(lines))
+        lines.append(f'💰 Balance: ${balance["total"]} | Libre: ${balance["available"]} | Margen: {balance["marginpct"]}%')
+    
+    sendmsg(build_msg(lines))
 
 
 def open_long(pair, ps, price, sl, tp, ta):
