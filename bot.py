@@ -422,12 +422,15 @@ def send_msg(text):
 def build_msg(parts):
     return chr(10).join(parts)
 
-# ── Telegram: Reporte de sesión (mejorado) ───────────────────────────
+# ── Telegram: Reporte de sesión (mejorado v2) ────────────────────────
 def send_session_report(state, nowstr, balance, today):
     """
     Envía reporte de sesión con lógica inteligente:
-    - Si hay posiciones: siempre envía (cada 30 min)
-    - Si no hay posiciones: solo cada 2 ciclos (cada 1 hora)
+    - Si hay posiciones: cada 2 ciclos (cada ~10 min = 2x5min)
+    - Si no hay posiciones: cada 6 ciclos (cada ~30 min = 6x5min)
+
+    IMPORTANTE: Como ahora el bot corre cada 5 min con posiciones,
+    ajustamos la frecuencia para reportar cada ~30 min efectivos.
     """
     # Verificar si hay posiciones abiertas
     has_positions = any(
@@ -435,17 +438,22 @@ def send_session_report(state, nowstr, balance, today):
         for p in PAIRS
     )
 
-    # Control de frecuencia si no hay posiciones
-    if not has_positions:
+    # Control de frecuencia
+    if has_positions:
+        # Con posiciones: reportar cada 6 ciclos (6 x 5min = 30 min)
         cycle_count = state.get('report_cycle_count', 0) + 1
         state['report_cycle_count'] = cycle_count
 
-        # Solo reportar cada 2 ciclos si no hay posiciones
-        if cycle_count % 2 != 0:
+        if cycle_count % 6 != 0:
             return
     else:
-        # Reset contador si hay posiciones
-        state['report_cycle_count'] = 0
+        # Sin posiciones: reportar cada 6 ciclos también (30 min)
+        # porque ahora corre cada 30 min sin posiciones
+        cycle_count = state.get('report_cycle_count', 0) + 1
+        state['report_cycle_count'] = cycle_count
+
+        if cycle_count % 1 != 0:  # Cada ciclo (que ya es 30 min)
+            return
 
     lines = [f'📊 REPORTE — {nowstr}']
     totalpnl = 0.0
@@ -454,10 +462,12 @@ def send_session_report(state, nowstr, balance, today):
     for p in PAIRS:
         ps = state.get(p['symbol'], {})
         pos = ps.get('position', 'FLAT')
-        sig = ps.get('signal', 'WAIT')
-        price = ps.get('price', 0)
-        pnl = ps.get('session_pnl', 0.0)
 
+        # ⭐ IMPORTANTE: Obtener precio ACTUAL, no el guardado
+        # El precio guardado es del último ciclo completo
+        current_price = ps.get('price', 0)  # Precio actual del último check
+
+        pnl = ps.get('session_pnl', 0.0)
         totalpnl += pnl if ps.get('trades_date') == today else 0
 
         # Solo mostrar detalles de posiciones abiertas
@@ -466,15 +476,15 @@ def send_session_report(state, nowstr, balance, today):
             entry = ps.get('entry_price', 0)
 
             if pos == 'LONG':
-                pnl_pct = ((price - entry) / entry * 100) if entry else 0
+                pnl_pct = ((current_price - entry) / entry * 100) if entry else 0
                 icon = '🟢'
             else:  # SHORT
-                pnl_pct = ((entry - price) / entry * 100) if entry else 0
+                pnl_pct = ((entry - current_price) / entry * 100) if entry else 0
                 icon = '🔴'
 
             s = '+' if pnl >= 0 else ''
             lines.append(
-                f'{icon} {p["fsym"]} {pos} @ ${round(entry,2)} → ${round(price,2)} '
+                f'{icon} {p["fsym"]} {pos} @ ${round(entry,2)} → ${round(current_price,2)} '
                 f'({pnl_pct:+.2f}%) | PnL: {s}{round(pnl,2)} USDT'
             )
 
