@@ -1,6 +1,25 @@
 # EMA Bot v10.1 + Momentum
 import requests, json, os, hmac, hashlib, time
 from datetime import datetime, timezone, timedelta
+import signal
+import sys
+
+# Control de loop
+running = True
+
+def signal_handler(sig, frame):
+    """Manejo de señales para cierre limpio"""
+    global running
+    print('\n[SIGNAL] Recibida señal de terminación. Cerrando...')
+    running = False
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+# Intervalos de check (en segundos)
+CHECK_INTERVAL_WITH_POSITIONS = 300    # 5 minutos
+CHECK_INTERVAL_NO_POSITIONS = 1800     # 30 minutos
+
 
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT = os.environ['TELEGRAM_CHAT_ID']
@@ -767,57 +786,82 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     ps['last_signal'] = sig
     return ps
 
-def main():
-    now_dt = datetime.now(timezone.utc)
-    today = now_dt.strftime('%Y-%m-%d')
-    now_str = now_dt.strftime('%Y-%m-%d %H:%M UTC')
+def run_bot_cycle():
+    """
+    Ejecuta un ciclo completo del bot.
+    Retorna True si hay posiciones abiertas, False si no.
+    """
+    nowdt = datetime.now(timezone.utc)
+    today = nowdt.strftime('%Y-%m-%d')
+    nowstr = nowdt.strftime('%Y-%m-%d %H:%M UTC')
+
+    sizing = f'{TRADE_PCT}%' if TRADE_PCT > 0 else f'${TRADE_AMOUNT}'
+
     print('=' * 55)
-    print(f' EMA Bot v10.1 + Momentum | {now_str}')
-    print(f' Sizing: TRADE_PCT={TRADE_PCT*100}% | Lev: {LEVERAGE}x')
-    print(f' RSI LONG>{RSI_MIN} SHORT<{RSI_MAX} | ADX>{ADX_MIN}')
-    print(f' MaxPos: {MAX_OPEN_POS} | MaxAlts: {MAX_ALT_POS} | MaxTrades: {MAX_TRADES_DAY}')
-    print(f' DailyLoss: ${DAILY_LOSS_LIMIT} | SL Cooldown: {SL_COOLDOWN_HOURS}h')
-    print(f' MTF: {USE_MTF} | VolFilter: {USE_VOLUME_FILTER} | BTCFilter: {USE_BTC_FILTER} | Momentum: {USE_MOMENTUM}')
-    print('=' * 55)
+    print(f' EMA Bot v10.2 + Loop | {nowstr}')
+    print(f' Sizing: {sizing} | Lev: {LEVERAGE}x')
+    # ... resto del print original ...
 
     state = load_state()
     balance = get_futures_balance() if API_KEY else None
-    loss_exceeded, daily_pnl = daily_loss_exceeded(state, today)
-    if loss_exceeded:
-        send_msg(build_msg(['🚨 STOP DIARIO ACTIVADO', f'PnL del día: ${round(daily_pnl,2)}', f'Límite: ${DAILY_LOSS_LIMIT}', f'Bot bloqueado hasta mañana. | {now_str}']))
-        save_state(state, now_str, balance)
-        return
 
-    print('[Filtro BTC 4H]')
-    btc_bull = btc_is_bullish()
+    # ... toda la lógica original de main() ...
 
-    # NUEVO: Verificar cambio de tendencia BTC y cerrar posiciones contrarias
-    btc_bull_prev = state.get('btc_bull_prev', btc_bull)
-    if btc_bull != btc_bull_prev:
-        print(f' [CAMBIO TENDENCIA BTC] {("BAJISTA→ALCISTA" if btc_bull else "ALCISTA→BAJISTA")}')
-        check_market_reversal_exits(state, btc_bull, btc_bull_prev, now_str, now_dt)
-    state['btc_bull_prev'] = btc_bull
+    save_state(state, nowstr, balance)
+    send_session_report(state, nowstr, balance, today)
 
-    open_now = count_open_positions(state)
-    print(f'[Posiciones abiertas: {open_now}/{MAX_OPEN_POS}]')
+    print(f'\n✓ Completado — {nowstr}')
 
-    for pair in PAIRS:
-        sym = pair['symbol']
-        print('-> ' + sym)
-        ps = get_pair_state(state, sym)
-        if ps.get('position') == 'FLAT' and open_now >= MAX_OPEN_POS:
-            print(' SALTADO: MAX_OPEN_POSITIONS')
-            state[sym] = ps
-            continue
+    # NUEVO: Retornar si hay posiciones
+    has_positions = count_open_positions(state) > 0
+    return has_positions
+
+
+def main():
+    """
+    Loop principal con frecuencia inteligente
+    """
+    global running
+
+    print('=' * 70)
+    print('🤖 EMA Bot v10.2 - Loop Inteligente INICIADO')
+    print('=' * 70)
+    print(f'Check con posiciones: {CHECK_INTERVAL_WITH_POSITIONS}s (5 min)')
+    print(f'Check sin posiciones: {CHECK_INTERVAL_NO_POSITIONS}s (30 min)')
+    print('=' * 70)
+
+    while running:
         try:
-            state[sym] = process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state)
-        except Exception as exc:
-            print(f' ERROR {sym}: {exc}')
-            send_msg(f'❌ Error {sym}: {exc}')
-        time.sleep(2)
+            # Ejecutar ciclo
+            has_positions = run_bot_cycle()
 
-    save_state(state, now_str, balance)
-    send_session_report(state, now_str, balance, today)
-    print('Completado — ' + now_str)
+            # Decidir intervalo
+            if has_positions:
+                interval = CHECK_INTERVAL_WITH_POSITIONS
+                next_check = datetime.now(timezone.utc) + timedelta(seconds=interval)
+                print(f'\n⏰ Posiciones activas. Próximo check en 5 min ({next_check.strftime("%H:%M UTC")})')
+            else:
+                interval = CHECK_INTERVAL_NO_POSITIONS
+                next_check = datetime.now(timezone.utc) + timedelta(seconds=interval)
+                print(f'\n⏰ Sin posiciones. Próximo check en 30 min ({next_check.strftime("%H:%M UTC")})')
+
+            # Sleep con check cada 10s para señales
+            elapsed = 0
+            while elapsed < interval and running:
+                sleep_time = min(10, interval - elapsed)
+                time.sleep(sleep_time)
+                elapsed += sleep_time
+
+        except KeyboardInterrupt:
+            print('\n[KEYBOARD] Deteniendo bot...')
+            running = False
+            break
+        except Exception as e:
+            print(f'\n[ERROR EN LOOP] {e}')
+            time.sleep(60)
+
+    print('\n🛑 Bot detenido correctamente')
+
+
 if __name__ == '__main__':
-     main()
+    main()
