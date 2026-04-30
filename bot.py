@@ -403,28 +403,88 @@ def send_msg(text):
 def build_msg(parts):
     return chr(10).join(parts)
 
-def send_session_report(state, now_str, balance, today):
-    lines = [f'📊 REPORTE — {now_str}', '']
-    total_pnl = 0.0
+# ── Telegram: Reporte de sesión (mejorado) ───────────────────────────
+def send_session_report(state, nowstr, balance, today):
+    """
+    Envía reporte de sesión con lógica inteligente:
+    - Si hay posiciones: siempre envía (cada 30 min)
+    - Si no hay posiciones: solo cada 2 ciclos (cada 1 hora)
+    """
+    # Verificar si hay posiciones abiertas
+    has_positions = any(
+        state.get(p['symbol'], {}).get('position', 'FLAT') != 'FLAT'
+        for p in PAIRS
+    )
+
+    # Control de frecuencia si no hay posiciones
+    if not has_positions:
+        cycle_count = state.get('report_cycle_count', 0) + 1
+        state['report_cycle_count'] = cycle_count
+
+        # Solo reportar cada 2 ciclos si no hay posiciones
+        if cycle_count % 2 != 0:
+            return
+    else:
+        # Reset contador si hay posiciones
+        state['report_cycle_count'] = 0
+
+    lines = [f'📊 REPORTE — {nowstr}']
+    totalpnl = 0.0
+    open_count = 0
+
     for p in PAIRS:
         ps = state.get(p['symbol'], {})
         pos = ps.get('position', 'FLAT')
         sig = ps.get('signal', 'WAIT')
         price = ps.get('price', 0)
-        rsi = ps.get('rsi', 0)
-        adx = ps.get('adx', 0)
         pnl = ps.get('session_pnl', 0.0)
-        total_pnl += pnl if ps.get('trades_date') == today else 0
-        icon = '🟢' if pos == 'LONG' else ('🔴' if pos == 'SHORT' else '⚪')
-        s = '+' if pnl >= 0 else ''
-        lines.append(f"{icon} {p['fsym']} ${price} RSI:{rsi} ADX:{adx} | {sig} | PnL:{s}{round(pnl,2)}")
-    lines.append('')
-    s = '+' if total_pnl >= 0 else ''
-    lines.append(f'💰 PnL hoy: {s}{round(total_pnl,2)} USDT')
-    lines.append(f'🚨 Límite diario: ${DAILY_LOSS_LIMIT}')
+
+        totalpnl += pnl if ps.get('trades_date') == today else 0
+
+        # Solo mostrar detalles de posiciones abiertas
+        if pos != 'FLAT':
+            open_count += 1
+            entry = ps.get('entry_price', 0)
+
+            if pos == 'LONG':
+                pnl_pct = ((price - entry) / entry * 100) if entry else 0
+                icon = '🟢'
+            else:  # SHORT
+                pnl_pct = ((entry - price) / entry * 100) if entry else 0
+                icon = '🔴'
+
+            s = '+' if pnl >= 0 else ''
+            lines.append(
+                f'{icon} {p["fsym"]} {pos} @ ${round(entry,2)} → ${round(price,2)} '
+                f'({pnl_pct:+.2f}%) | PnL: {s}{round(pnl,2)} USDT'
+            )
+
+    # Si no hay posiciones, mostrar señales activas
+    if open_count == 0:
+        lines.append('⚪ Sin posiciones abiertas')
+        active_signals = []
+        for p in PAIRS:
+            ps = state.get(p['symbol'], {})
+            sig = ps.get('signal', 'WAIT')
+            if sig in ['BUY', 'SELL', 'LONG_ACTIVE', 'SHORT_ACTIVE']:
+                active_signals.append(f'{p["fsym"]}: {sig}')
+
+        if active_signals:
+            lines.append(f'📡 Señales: {", ".join(active_signals[:3])}')
+
+    # PnL del día
+    s = '+' if totalpnl >= 0 else ''
+    lines.append(f'💵 PnL hoy: {s}{round(totalpnl,2)} USDT | Límite: {DAILY_LOSS_LIMIT}')
+
+    # Balance
     if isinstance(balance, dict):
-        lines.append(f"💼 Balance: ${balance['total']} | Libre: ${balance['available']} | Margen: {balance['margin_pct']}%")
+        lines.append(
+            f'💰 ${balance["total"]} (Libre: ${balance["available"]}, '
+            f'Margen: {balance["margin_pct"]}%)'
+        )
+
     send_msg(build_msg(lines))
+
 
 def open_long(pair, ps, price, sl, tp, ta):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
