@@ -282,6 +282,87 @@ def pair_daily_is_bullish(fsym):
         return (e21[-1] or 0) > (e89[-1] or 0)
     except Exception:
         return True
+# ── NUEVO: Cierre por cambio de tendencia BTC ────────────────────────────────
+def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now_dt):
+    """
+    Cierra posiciones contrarias cuando BTC cambia de tendencia.
+    - BTC cambió a alcista → cierra SHORTs en ganancia
+    - BTC cambió a bajista → cierra LONGs en ganancia
+    """
+    if btc_bull_now == btc_bull_prev:
+        return  # No hubo cambio de tendencia
+
+    print(f' [REVERSIÓN BTC] {"BAJISTA→ALCISTA" if btc_bull_now else "ALCISTA→BAJISTA"}')
+
+    for pair in PAIRS:
+        ps = state.get(pair['symbol'], {})
+        pos = ps.get('position', 'FLAT')
+
+        if pos == 'FLAT':
+            continue
+
+        entry = ps.get('entry_price')
+        if not entry:
+            continue
+
+        # Obtener precio actual
+        try:
+            c = fetch_candles(pair['fsym'])
+            price = c['closes'][-1]
+        except Exception as exc:
+            print(f' [REVERSIÓN] Error obteniendo precio {pair["fsym"]}: {exc}')
+            continue
+
+        # Calcular PnL
+        if pos == 'LONG':
+            pnl_pct = (price - entry) / entry * 100
+        else:  # SHORT
+            pnl_pct = (entry - price) / entry * 100
+
+        ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+        pnl_u = ta * LEVERAGE * pnl_pct / 100
+
+        # BTC cambió a alcista → cerrar SHORTs en ganancia
+        if btc_bull_now and pos == 'SHORT' and pnl_pct > 0:
+            print(f' [REVERSIÓN] Cerrando SHORT {pair["fsym"]} en +{round(pnl_pct,2)}%')
+            send_msg(build_msg([
+                f'🔄 CAMBIO DE TENDENCIA — {pair["fsym"]}/USDT',
+                f'📊 BTC cambió a ALCISTA → Cerrando SHORT en ganancia',
+                f'💵 Entrada: ${round(entry,2)} | Actual: ${round(price,2)}',
+                f'💰 PnL: +{round(pnl_pct,2)}% (+${round(pnl_u,2)} USDT)',
+                f'✅ Ganancia asegurada antes de reversión',
+                f'⏰ {now_str}',
+            ]))
+            if AUTO_TRADE and API_KEY:
+                close_short(pair, ps, price, 'BTC alcista - ganancia asegurada')
+            else:
+                ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                          'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                          'partial_closed': False, 'trade_amount_used': None, 'entry_time': None})
+
+        # BTC cambió a bajista → cerrar LONGs en ganancia
+        elif not btc_bull_now and pos == 'LONG' and pnl_pct > 0:
+            print(f' [REVERSIÓN] Cerrando LONG {pair["fsym"]} en +{round(pnl_pct,2)}%')
+            send_msg(build_msg([
+                f'🔄 CAMBIO DE TENDENCIA — {pair["fsym"]}/USDT',
+                f'📊 BTC cambió a BAJISTA → Cerrando LONG en ganancia',
+                f'💵 Entrada: ${round(entry,2)} | Actual: ${round(price,2)}',
+                f'💰 PnL: +{round(pnl_pct,2)}% (+${round(pnl_u,2)} USDT)',
+                f'✅ Ganancia asegurada antes de reversión',
+                f'⏰ {now_str}',
+            ]))
+            if AUTO_TRADE and API_KEY:
+                close_position(pair, ps, price, 'BTC bajista - ganancia asegurada')
+            else:
+                ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                          'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                          'partial_closed': False, 'trade_amount_used': None, 'entry_time': None})
+
+        # Mantener posiciones en pérdida o alineadas con la nueva tendencia
+        elif pnl_pct <= 0:
+            print(f' [REVERSIÓN] Manteniendo {pos} {pair["fsym"]} en pérdida ({round(pnl_pct,2)}%)')
+        else:
+            print(f' [REVERSIÓN] Manteniendo {pos} {pair["fsym"]} (alineado con nueva tendencia)')
 
 def volume_confirmed(vols):
     avg = sum(vols[:-1]) / max(len(vols) - 1, 1)
@@ -647,8 +728,16 @@ def main():
         save_state(state, now_str, balance)
         return
 
-    print('[Filtro BTC]')
+    print('[Filtro BTC 4H]')
     btc_bull = btc_is_bullish()
+
+    # NUEVO: Verificar cambio de tendencia BTC y cerrar posiciones contrarias
+    btc_bull_prev = state.get('btc_bull_prev', btc_bull)
+    if btc_bull != btc_bull_prev:
+        print(f' [CAMBIO TENDENCIA BTC] {("BAJISTA→ALCISTA" if btc_bull else "ALCISTA→BAJISTA")}')
+        check_market_reversal_exits(state, btc_bull, btc_bull_prev, now_str, now_dt)
+    state['btc_bull_prev'] = btc_bull
+
     open_now = count_open_positions(state)
     print(f'[Posiciones abiertas: {open_now}/{MAX_OPEN_POS}]')
 
