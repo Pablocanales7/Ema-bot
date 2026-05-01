@@ -425,6 +425,150 @@ def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now
         else:
             print(f' [REVERSIÓN] Manteniendo {pos} {pair["fsym"]} (alineado con nueva tendencia)')
 
+
+def check_btc_long_signal_exits(state, btc_signal, now_str, now_dt):
+    """
+    Cierra SHORTs en alts que estén en ganancia cuando BTC tiene señal LONG.
+    No espera cambio de tendencia por EMA, reacciona a la señal de entrada.
+    """
+    if btc_signal not in ('BUY', 'LONG_ACTIVE'):
+        return
+
+    print(f' [BTC SIGNAL EXIT] Señal BTC: {btc_signal} → revisar SHORTs en alts')
+
+    for pair in PAIRS:
+        fsym = pair['fsym']
+        sym = pair['symbol']
+        ps = state.get(sym, {})
+        pos = ps.get('position', 'FLAT')
+
+        # Solo alts (no BTC) y solo SHORTs
+        if fsym == 'BTC' or pos != 'SHORT':
+            continue
+
+        entry = ps.get('entry_price')
+        if not entry:
+            continue
+
+        # Precio actual del par
+        try:
+            closes, highs, lows, vols = fetchcandles(fsym)
+            if not closes:
+                continue
+            price = closes[-1]
+        except Exception as exc:
+            print(f' [BTC SIGNAL EXIT] Error obteniendo precio {fsym}: {exc}')
+            continue
+
+        # PnL de la posición SHORT
+        pnl_pct = (entry - price) / entry * 100
+        ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+        pnl_u = ta * LEVERAGE * pnl_pct / 100
+
+        if pnl_pct <= 0:
+            print(f' [BTC SIGNAL EXIT] Manteniendo SHORT {fsym} (pérdida {round(pnl_pct,2)}%)')
+            continue
+
+        print(f' [BTC SIGNAL EXIT] Cerrando SHORT {fsym} en +{round(pnl_pct,2)}% por señal LONG de BTC')
+
+        msg = build_msg([
+            f'🔄 BTC SEÑAL LONG — CIERRE SHORT {fsym}/USDT',
+            '📊 BTC con señal alcista → cerrando SHORT en ganancia',
+            f'💵 Entrada: ${round(entry,2)} | Actual: ${round(price,2)}',
+            f'💰 PnL: +{round(pnl_pct,2)}% (+${round(pnl_u,2)} USDT)',
+            f'⏰ {now_str}',
+        ])
+        send_msg(msg)
+
+        if AUTO_TRADE and API_KEY:
+            close_short(pair, ps, price, 'BTC señal LONG - ganancia asegurada')
+        else:
+            ps.update({
+                'position': 'FLAT',
+                'entry_price': None,
+                'entry_qty': None,
+                'initial_sl': None,
+                'tp_target': None,
+                'trailing_sl': None,
+                'partial_closed': False,
+                'trade_amount_used': None,
+                'entry_time': None,
+            })
+
+
+def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
+    """
+    Cierra LONGs en alts que estén en ganancia cuando BTC tiene señal SHORT.
+    Simétrico a check_btc_long_signal_exits.
+    """
+    if btc_signal not in ('SELL', 'SHORT_ACTIVE'):
+        return
+
+    print(f' [BTC SIGNAL EXIT] Señal BTC: {btc_signal} → revisar LONGs en alts')
+
+    for pair in PAIRS:
+        fsym = pair['fsym']
+        sym = pair['symbol']
+        ps = state.get(sym, {})
+        pos = ps.get('position', 'FLAT')
+
+        # Solo alts (no BTC) y solo LONGs
+        if fsym == 'BTC' or pos != 'LONG':
+            continue
+
+        entry = ps.get('entry_price')
+        if not entry:
+            continue
+
+        # Precio actual del par
+        try:
+            closes, highs, lows, vols = fetchcandles(fsym)
+            if not closes:
+                continue
+            price = closes[-1]
+        except Exception as exc:
+            print(f' [BTC SIGNAL EXIT] Error obteniendo precio {fsym}: {exc}')
+            continue
+
+        # PnL de la posición LONG
+        pnl_pct = (price - entry) / entry * 100
+        ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+        pnl_u = ta * LEVERAGE * pnl_pct / 100
+
+        if pnl_pct <= 0:
+            print(f' [BTC SIGNAL EXIT] Manteniendo LONG {fsym} (pérdida {round(pnl_pct,2)}%)')
+            continue
+
+        print(f' [BTC SIGNAL EXIT] Cerrando LONG {fsym} en +{round(pnl_pct,2)}% por señal SHORT de BTC')
+
+        msg = build_msg([
+            f'🔄 BTC SEÑAL SHORT — CIERRE LONG {fsym}/USDT',
+            '📊 BTC con señal bajista → cerrando LONG en ganancia',
+            f'💵 Entrada: ${round(entry,2)} | Actual: ${round(price,2)}',
+            f'💰 PnL: +{round(pnl_pct,2)}% (+${round(pnl_u,2)} USDT)',
+            f'⏰ {now_str}',
+        ])
+        send_msg(msg)
+
+        if AUTO_TRADE and API_KEY:
+            close_position(pair, ps, price, 'BTC señal SHORT - ganancia asegurada')
+        else:
+            ps.update({
+                'position': 'FLAT',
+                'entry_price': None,
+                'entry_qty': None,
+                'initial_sl': None,
+                'tp_target': None,
+                'trailing_sl': None,
+                'partial_closed': False,
+                'trade_amount_used': None,
+                'entry_time': None,
+            })
+
+
+
+
+
 def volume_confirmed(vols):
     avg = sum(vols[:-1]) / max(len(vols) - 1, 1)
     last = vols[-1]
@@ -491,10 +635,12 @@ def send_session_report(state, nowstr, balance, today):
     lines.append(f'💰 Límite diario: {DAILY_LOSS_LIMIT}')
     
     if isinstance(balance, dict):
-        lines.append(f'💰 Balance: ${balance["total"]} | Libre: ${balance["available"]} | Margen: {balance["marginpct"]}%')
+        total = balance.get('total', 0)
+        available = balance.get('available', 0)
+        margin_pct = balance.get('marginpct', balance.get('margin_pct', 0))  # Probar ambas claves
+        lines.append(f'💰 Balance: ${total} | Libre: ${available} | Margen: {margin_pct}%')
     
     sendmsg(build_msg(lines))
-
 
 def open_long(pair, ps, price, sl, tp, ta):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
@@ -785,13 +931,13 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
 def run_bot_cycle():
     """Ejecuta un ciclo completo del bot"""
     global cycle_count
-    
+
     now_dt = datetime.now(timezone.utc)
     today = now_dt.strftime('%Y-%m-%d')
     now_str = now_dt.strftime('%Y-%m-%d %H:%M UTC')
-    
+
     sizing = f'{TRADE_PCT*100:.1f}%' if TRADE_PCT > 0 else f'${TRADE_AMOUNT}'
-    
+
     print('=' * 55)
     print(f' EMA Bot v10.2 + Loop | {now_str}')
     print(f' Sizing: {sizing} | Lev: {LEVERAGE}x')
@@ -800,60 +946,77 @@ def run_bot_cycle():
     print(f' DailyLoss: ${DAILY_LOSS_LIMIT} | SL Cooldown: {SL_COOLDOWN_HOURS}h')
     print(f' MTF: {USE_MTF} | VolFilter: {USE_VOLUME_FILTER}')
     print('=' * 55)
-    
+
     state = load_state()
     balance = get_futures_balance() if API_KEY else None
-    
+    btc_signal = None  # señal de BTC en este ciclo
+
     # Check daily loss
     loss_exceeded, daily_pnl = daily_loss_exceeded(state, today)
     if loss_exceeded:
-        sendmsg(build_msg([
+        send_msg(build_msg([
             '🛑 STOP DIARIO ACTIVADO',
-            f'PnL del día: {round(daily_pnl,2)}',
+            f'PnL del día: {round(daily_pnl, 2)}',
             f'Límite: {DAILY_LOSS_LIMIT}',
             f'Bot bloqueado hasta mañana. {now_str}'
         ]))
         save_state(state, now_str, balance)
         return False
-    
+
     print('[Filtro BTC 4H]')
     btc_bull = btc_is_bullish()
-    
+
     open_now = count_open_positions(state)
     print(f'[Posiciones abiertas: {open_now}/{MAX_OPEN_POS}]')
-    
+
     for pair in PAIRS:
         sym = pair['symbol']
-        print(f'\\n-> {sym}')
+        fsym = pair['fsym']
+        print(f'\n-> {sym}')
         ps = get_pair_state(state, sym)
-        
+
         if ps.get('position') == 'FLAT' and open_now >= MAX_OPEN_POS:
             print(' [SALTADO MAX_OPEN_POSITIONS]')
             state[sym] = ps
             continue
-        
+
         try:
-            state[sym] = process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state)
+            state[sym] = process_pair(
+                pair, ps, today, now_str, now_dt,
+                btc_bull, balance, state
+            )
+
+            # Si este par es BTC, guardar su señal para el resto de la lógica del ciclo
+            if fsym == 'BTC':
+                btc_signal = state[sym].get('signal')
         except Exception as exc:
             print(f' [ERROR {sym}] {exc}')
-            sendmsg(f'❌ Error {sym}: {exc}')
-        
+            send_msg(f'❌ Error {sym}: {exc}')
+
         time.sleep(2)
-    
+
+    # Cierres moderados de alts según señal de BTC (balanceado LONG/SHORT)
+    if btc_signal:
+        check_btc_long_signal_exits(state, btc_signal, now_str, now_dt)
+        check_btc_short_signal_exits(state, btc_signal, now_str, now_dt)
+
     save_state(state, now_str, balance)
-    
+
     # 🆕 INCREMENTAR CONTADOR Y ENVIAR REPORTE
     cycle_count += 1
-    
+
     if cycle_count >= REPORT_EVERY_N_CYCLES:
         send_session_report(state, now_str, balance, today)
         cycle_count = 0  # Reset contador
-        print(f'\\n📊 Reporte enviado (ciclo {REPORT_EVERY_N_CYCLES})')
+        print(f'\n📊 Reporte enviado (ciclo {REPORT_EVERY_N_CYCLES})')
     else:
-        print(f'\\n📊 Próximo reporte en {REPORT_EVERY_N_CYCLES - cycle_count} ciclos (~{(REPORT_EVERY_N_CYCLES - cycle_count)*5} min)')
-    
-    print(f'\\n✓ Completado — {now_str}')
-    
+        print(
+            f'\n📊 Próximo reporte en {REPORT_EVERY_N_CYCLES - cycle_count} ciclos '
+            f'(~{(REPORT_EVERY_N_CYCLES - cycle_count)*5} min)'
+        )
+
+    print(f'\n✓ Completado — {now_str}')
+
     # Retornar si hay posiciones abiertas
     has_positions = count_open_positions(state) > 0
     return has_positions
