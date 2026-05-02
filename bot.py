@@ -9,6 +9,14 @@ from datetime import datetime, timezone, timedelta
 import signal
 import sys
 
+# ──────────────────────────────────────────────────────────
+# FEES BINANCE FUTURES TAKER (market orders) Binance VIP0
+# ──────────────────────────────────────────────────────────
+FEE_RATE       = 0.0005   # 0.05% por transaccion (taker)
+FEE_ROUNDTRIP  = 0.0010   # 0.10% total (entrada + salida)
+FEE_BUFFER_PCT = 0.10     # en pct descontado de pnlpct bruto
+
+
 
 cycle_count = 0
 REPORT_EVERY_N_CYCLES = 6  # Reportar cada 6 ciclos (6 × 5min = 30 min)
@@ -1678,3 +1686,16 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+def calc_pnl_net(pos, entry, price, trade_amount, leverage):
+    # Calcula PnL NETO descontando fees Binance taker 0.05%
+    if not entry or entry <= 0:
+        return 0.0, 0.0
+    if pos == 'LONG':
+        pnlpct_gross = (price - entry) / entry * 100
+    else:
+        pnlpct_gross = (entry - price) / entry * 100
+    pnlpct_net = pnlpct_gross - FEE_BUFFER_PCT
+    pnl_usd = trade_amount * leverage * pnlpct_net / 100
+    return pnlpct_net, pnl_usd
+
