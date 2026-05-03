@@ -732,6 +732,58 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
             })
 
 
+
+# ── MACD: Filtro de confirmación ──────────────────────────────────────────────
+MIN_PROFIT_MACD_EXIT = 0.3  # % mínimo de ganancia para salida anticipada por MACD
+
+def compute_macd(closes, fast=12, slow=26, signal=9):
+    closes = list(closes)
+    if len(closes) < slow + signal:
+        return None, None, None
+    def ema_calc(data, period):
+        k = 2 / (period + 1)
+        ema = [sum(data[:period]) / period]
+        for price in data[period:]:
+            ema.append(price * k + ema[-1] * (1 - k))
+        return ema
+    ema_fast = ema_calc(closes, fast)
+    ema_slow = ema_calc(closes, slow)
+    min_len = min(len(ema_fast), len(ema_slow))
+    macd_line = [ema_fast[i + (len(ema_fast) - min_len)] - ema_slow[i + (len(ema_slow) - min_len)]
+                 for i in range(min_len)]
+    signal_line = ema_calc(macd_line, signal)
+    min_len2 = min(len(macd_line), len(signal_line))
+    histogram = [macd_line[i + (len(macd_line) - min_len2)] - signal_line[i]
+                 for i in range(min_len2)]
+    return macd_line[-1], signal_line[-1], histogram[-1]
+
+def macd_confirmed_long(closes):
+    macd, sig, hist = compute_macd(closes)
+    if macd is None:
+        return True
+    confirmed = macd > sig
+    print(f' [MACD] {"✅ ALCISTA" if confirmed else "⛔ BAJISTA"} — macd={round(macd,4)} sig={round(sig,4)}')
+    return confirmed
+
+def macd_confirmed_short(closes):
+    macd, sig, hist = compute_macd(closes)
+    if macd is None:
+        return True
+    confirmed = macd < sig
+    print(f' [MACD] {"✅ BAJISTA" if confirmed else "⛔ ALCISTA"} — macd={round(macd,4)} sig={round(sig,4)}')
+    return confirmed
+
+def macd_exit_signal(closes, position):
+    macd, sig, hist = compute_macd(closes)
+    if macd is None:
+        return False
+    if position == 'LONG':
+        return macd < sig and hist < 0
+    if position == 'SHORT':
+        return macd > sig and hist > 0
+    return False
+# ── FIN MACD ───────────────────────────────────────────────────────────────────
+
 def volume_confirmed(vols):
     avg = sum(vols[:-1]) / max(len(vols) - 1, 1)
     last = vols[-1]
