@@ -735,6 +735,7 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
 
 # ── MACD: Filtro de confirmación ──────────────────────────────────────────────
 MIN_PROFIT_MACD_EXIT = 0.3  # % mínimo de ganancia para salida anticipada por MACD
+MIN_MACD_STRENGTH = 50      # Diferencia mínima entre MACD y señal para confirmar entrada  # % mínimo de ganancia para salida anticipada por MACD
 
 def compute_macd(closes, fast=12, slow=26, signal=9):
     closes = list(closes)
@@ -761,16 +762,22 @@ def macd_confirmed_long(closes):
     macd, sig, hist = compute_macd(closes)
     if macd is None:
         return True
-    confirmed = macd > sig
-    print(f' [MACD] {"✅ ALCISTA" if confirmed else "⛔ BAJISTA"} — macd={round(macd,4)} sig={round(sig,4)}')
+    strength = macd - sig
+    confirmed = macd > sig and strength >= MIN_MACD_STRENGTH
+    status = '✅ ALCISTA' if macd > sig else '⛔ BAJISTA'
+    warn = '' if confirmed else f' (fuerza {round(strength,1)} < mín {MIN_MACD_STRENGTH})'
+    print(f' [MACD] {status} — macd={round(macd,2)} sig={round(sig,2)} fuerza={round(strength,2)}{warn}')
     return confirmed
 
 def macd_confirmed_short(closes):
     macd, sig, hist = compute_macd(closes)
     if macd is None:
         return True
-    confirmed = macd < sig
-    print(f' [MACD] {"✅ BAJISTA" if confirmed else "⛔ ALCISTA"} — macd={round(macd,4)} sig={round(sig,4)}')
+    strength = sig - macd
+    confirmed = macd < sig and strength >= MIN_MACD_STRENGTH
+    status = '✅ BAJISTA' if macd < sig else '⛔ ALCISTA'
+    warn = '' if confirmed else f' (fuerza {round(strength,1)} < mín {MIN_MACD_STRENGTH})'
+    print(f' [MACD] {status} — macd={round(macd,2)} sig={round(sig,2)} fuerza={round(strength,2)}{warn}')
     return confirmed
 
 def macd_exit_signal(closes, position):
