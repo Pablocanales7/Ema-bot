@@ -785,38 +785,79 @@ def macd_exit_signal(closes, position):
     macd, sig, hist = compute_macd(closes)
     if macd is None:
         return False
-    # ── Salida anticipada por cruce MACD ──────────────────────────────────────
+    # ── Salida anticipada por MACD (cruce + debilitamiento) ───────────────────
     if ps.get('position', 'FLAT') != 'FLAT':
         try:
             _c_macd = fetch_candles(fsym)
-            if macd_exit_signal(_c_macd['closes'], ps['position']):
-                _entry = ps.get('entry_price')
-                _price = _c_macd['closes'][-1]
-                if _entry:
-                    _pos = ps['position']
-                    _pnl = (_price - _entry) / _entry * 100 if _pos == 'LONG' else (_entry - _price) / _entry * 100
-                    if _pnl > MIN_PROFIT_MACD_EXIT:
-                        _ta = ps.get('trade_amount_used', TRADE_AMOUNT)
-                        _pnl_u = _ta * LEVERAGE * _pnl / 100
-                        print(f' [MACD EXIT] Cerrando {_pos} {fsym} por cruce +{round(_pnl,2)}%')
-                        send_msg(build_msg([
-                            f'📉 MACD CRUCE — {fsym}/USDT',
-                            f'⚡ Salida anticipada por cambio de momentum',
-                            f'💵 Entrada: ${round(_entry,2)} | Actual: ${round(_price,2)}',
-                            f'💰 PnL: +{round(_pnl,2)}% (+${round(_pnl_u,2)} USDT)',
-                        ]))
-                        if AUTO_TRADE and API_KEY:
-                            if _pos == 'LONG':
-                                close_position(pair, ps, _price, 'MACD cruce bajista')
-                            else:
-                                close_short(pair, ps, _price, 'MACD cruce alcista')
+            _closes = _c_macd['closes']
+            _entry  = ps.get('entry_price')
+            _price  = _closes[-1]
+            _pos    = ps['position']
+            if _entry:
+                _pnl   = (_price - _entry) / _entry * 100 if _pos == 'LONG' else (_entry - _price) / _entry * 100
+                _ta    = ps.get('trade_amount_used', TRADE_AMOUNT)
+                _pnl_u = _ta * LEVERAGE * _pnl / 100
+                _exit_cross     = macd_exit_signal(_closes, _pos)
+                _weak, _hn, _hp = macd_weakening(_closes, _pos)
+
+                def _do_close(reason, msg_lines):
+                    if AUTO_TRADE and API_KEY:
+                        if _pos == 'LONG':
+                            close_position(pair, ps, _price, reason)
                         else:
-                            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
-                                      'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                                      'partial_closed': False, 'trade_amount_used': None})
+                            close_short(pair, ps, _price, reason)
+                    else:
+                        ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                                  'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                                  'partial_closed': False, 'trade_amount_used': None})
+                    send_msg(build_msg(msg_lines))
+
+                if _exit_cross and _pnl > MIN_PROFIT_MACD_EXIT:
+                    print(f' [MACD CRUCE] Cerrando {_pos} {fsym} +{round(_pnl,2)}%')
+                    _do_close(f'MACD cruce {"bajista" if _pos == "LONG" else "alcista"}', [
+                        f'📉 MACD CRUCE — {fsym}/USDT',
+                        f'⚡ Momentum invertido — salida por cruce de líneas',
+                        f'💵 Entrada: ${round(_entry,2)} | Actual: ${round(_price,2)}',
+                        f'💰 PnL: +{round(_pnl,2)}% (+${round(_pnl_u,2)} USDT)',
+                    ])
+                elif _weak and _pnl > MIN_PROFIT_MACD_EXIT:
+                    print(f' [MACD DEBIL] Cerrando {_pos} {fsym} hist {_hp}→{_hn} +{round(_pnl,2)}%')
+                    _do_close(f'MACD debilitamiento {"bajista" if _pos == "LONG" else "alcista"}', [
+                        f'⚠️ MACD DEBILITAMIENTO — {fsym}/USDT',
+                        f'📉 Histograma {"cayendo" if _pos == "LONG" else "subiendo"} antes del cruce',
+                        f'📊 Hist: {_hp} → {_hn} (umbral {round(MACD_WEAKENING_THRESHOLD*100)}%)',
+                        f'💵 Entrada: ${round(_entry,2)} | Actual: ${round(_price,2)}',
+                        f'💰 PnL: +{round(_pnl,2)}% (+${round(_pnl_u,2)} USDT)',
+                        f'✅ Ganancia asegurada antes del cruce',
+                    ])
+                else:
+                    _mv, _sv, _hv = compute_macd(_closes)
+                    if _mv:
+                        print(f' [MACD] {_pos} {fsym} — macd={round(_mv,2)} sig={round(_sv,2)} hist={round(_hv,2)} pnl={round(_pnl,2)}%')
         except Exception as _e:
             print(f' [MACD EXIT] Error: {_e}')
-    # ── FIN salida MACD ─────────────────────────────────────────────────────────
+    # ── FIN salida MACD ──────────────────────────────────────────────────────
+    if position == 'LONG':
+        return macd < sig and hist < 0
+    if position == 'SHORT':
+        return macd > sig and hist > 0
+    return False
+
+def macd_weakening(closes, position):
+    """Detecta debilitamiento del histograma ANTES del cruce."""
+    if len(closes) < 40:
+        return False, 0, 0
+    _, _, hist_now  = compute_macd(closes)
+    _, _, hist_prev = compute_macd(closes[:-1])
+    if None in (hist_now, hist_prev) or hist_prev == 0:
+        return False, 0, 0
+    if position == 'LONG' and hist_now > 0 and hist_prev > 0:
+        ratio = hist_now / hist_prev
+        return ratio <= MACD_WEAKENING_THRESHOLD, round(hist_now, 2), round(hist_prev, 2)
+    if position == 'SHORT' and hist_now < 0 and hist_prev < 0:
+        ratio = hist_now / hist_prev
+        return ratio <= MACD_WEAKENING_THRESHOLD, round(hist_now, 2), round(hist_prev, 2)
+    return False, 0, 0
 
     if position == 'LONG':
         return macd < sig and hist < 0
