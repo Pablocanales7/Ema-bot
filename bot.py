@@ -777,6 +777,39 @@ def macd_exit_signal(closes, position):
     macd, sig, hist = compute_macd(closes)
     if macd is None:
         return False
+    # ── Salida anticipada por cruce MACD ──────────────────────────────────────
+    if ps.get('position', 'FLAT') != 'FLAT':
+        try:
+            _c_macd = fetch_candles(fsym)
+            if macd_exit_signal(_c_macd['closes'], ps['position']):
+                _entry = ps.get('entry_price')
+                _price = _c_macd['closes'][-1]
+                if _entry:
+                    _pos = ps['position']
+                    _pnl = (_price - _entry) / _entry * 100 if _pos == 'LONG' else (_entry - _price) / _entry * 100
+                    if _pnl > MIN_PROFIT_MACD_EXIT:
+                        _ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+                        _pnl_u = _ta * LEVERAGE * _pnl / 100
+                        print(f' [MACD EXIT] Cerrando {_pos} {fsym} por cruce +{round(_pnl,2)}%')
+                        send_msg(build_msg([
+                            f'📉 MACD CRUCE — {fsym}/USDT',
+                            f'⚡ Salida anticipada por cambio de momentum',
+                            f'💵 Entrada: ${round(_entry,2)} | Actual: ${round(_price,2)}',
+                            f'💰 PnL: +{round(_pnl,2)}% (+${round(_pnl_u,2)} USDT)',
+                        ]))
+                        if AUTO_TRADE and API_KEY:
+                            if _pos == 'LONG':
+                                close_position(pair, ps, _price, 'MACD cruce bajista')
+                            else:
+                                close_short(pair, ps, _price, 'MACD cruce alcista')
+                        else:
+                            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                                      'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                                      'partial_closed': False, 'trade_amount_used': None})
+        except Exception as _e:
+            print(f' [MACD EXIT] Error: {_e}')
+    # ── FIN salida MACD ─────────────────────────────────────────────────────────
+
     if position == 'LONG':
         return macd < sig and hist < 0
     if position == 'SHORT':
@@ -1579,9 +1612,19 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             ps['last_signal'] = sig
             return ps
         if want_long:
-            open_long(pair, ps, price, sl_long, tp_long, ta_now)
+            if macd_confirmed_long(closes):
+                open_long(pair, ps, price, sl_long, tp_long, ta_now)
+            else:
+                print(f' [MACD] ⛔ LONG bloqueado {fsym} — momentum bajista')
+                ps['last_signal'] = sig
+                return ps
         if want_short:
-            open_short(pair, ps, price, sl_short, tp_short, ta_now)
+            if macd_confirmed_short(closes):
+                open_short(pair, ps, price, sl_short, tp_short, ta_now)
+            else:
+                print(f' [MACD] ⛔ SHORT bloqueado {fsym} — momentum alcista')
+                ps['last_signal'] = sig
+                return ps
 
     ps['last_signal'] = sig
     return ps
