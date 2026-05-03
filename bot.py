@@ -1,3 +1,4 @@
+import numpy as np
 # EMA Bot v10.1 + Momentum
 import requests
 import json
@@ -785,6 +786,58 @@ def macd_exit_signal(closes, position):
     macd, sig, hist = compute_macd(closes)
     if macd is None:
         return False
+    # ── Salida anticipada por MACD (cruce + debilitamiento) ───────────────────
+    if ps.get('position', 'FLAT') != 'FLAT':
+        try:
+            _c_macd = fetch_candles(fsym)
+            _closes = _c_macd['closes']
+            _entry  = ps.get('entry_price')
+            _price  = _closes[-1]
+            _pos    = ps['position']
+            if _entry:
+                _pnl   = (_price - _entry) / _entry * 100 if _pos == 'LONG' else (_entry - _price) / _entry * 100
+                _ta    = ps.get('trade_amount_used', TRADE_AMOUNT)
+                _pnl_u = _ta * LEVERAGE * _pnl / 100
+                _exit_cross     = macd_exit_signal(_closes, _pos)
+                _weak, _hn, _hp = macd_weakening(_closes, _pos)
+
+                def _do_close(reason, msg_lines):
+                    if AUTO_TRADE and API_KEY:
+                        if _pos == 'LONG':
+                            close_position(pair, ps, _price, reason)
+                        else:
+                            close_short(pair, ps, _price, reason)
+                    else:
+                        ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                                  'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                                  'partial_closed': False, 'trade_amount_used': None})
+                    send_msg(build_msg(msg_lines))
+
+                if _exit_cross and _pnl > MIN_PROFIT_MACD_EXIT:
+                    print(f' [MACD CRUCE] Cerrando {_pos} {fsym} +{round(_pnl,2)}%')
+                    _do_close(f'MACD cruce {"bajista" if _pos == "LONG" else "alcista"}', [
+                        f'📉 MACD CRUCE — {fsym}/USDT',
+                        f'⚡ Momentum invertido — salida por cruce de líneas',
+                        f'💵 Entrada: ${round(_entry,2)} | Actual: ${round(_price,2)}',
+                        f'💰 PnL: +{round(_pnl,2)}% (+${round(_pnl_u,2)} USDT)',
+                    ])
+                elif _weak and _pnl > MIN_PROFIT_MACD_EXIT:
+                    print(f' [MACD DEBIL] Cerrando {_pos} {fsym} hist {_hp}→{_hn} +{round(_pnl,2)}%')
+                    _do_close(f'MACD debilitamiento {"bajista" if _pos == "LONG" else "alcista"}', [
+                        f'⚠️ MACD DEBILITAMIENTO — {fsym}/USDT',
+                        f'📉 Histograma {"cayendo" if _pos == "LONG" else "subiendo"} antes del cruce',
+                        f'📊 Hist: {_hp} → {_hn} (umbral {round(MACD_WEAKENING_THRESHOLD*100)}%)',
+                        f'💵 Entrada: ${round(_entry,2)} | Actual: ${round(_price,2)}',
+                        f'💰 PnL: +{round(_pnl,2)}% (+${round(_pnl_u,2)} USDT)',
+                        f'✅ Ganancia asegurada antes del cruce',
+                    ])
+                else:
+                    _mv, _sv, _hv = compute_macd(_closes)
+                    if _mv:
+                        print(f' [MACD] {_pos} {fsym} — macd={round(_mv,2)} sig={round(_sv,2)} hist={round(_hv,2)} pnl={round(_pnl,2)}%')
+        except Exception as _e:
+            print(f' [MACD EXIT] Error: {_e}')
+    # ── FIN salida MACD ──────────────────────────────────────────────────────
     if position == 'LONG':
         return macd < sig and hist < 0
     if position == 'SHORT':
@@ -806,6 +859,13 @@ def macd_weakening(closes, position):
         ratio = hist_now / hist_prev
         return ratio <= MACD_WEAKENING_THRESHOLD, round(hist_now, 2), round(hist_prev, 2)
     return False, 0, 0
+
+    if position == 'LONG':
+        return macd < sig and hist < 0
+    if position == 'SHORT':
+        return macd > sig and hist > 0
+    return False
+# ── FIN MACD ───────────────────────────────────────────────────────────────────
 
 def volume_confirmed(vols):
     avg = sum(vols[:-1]) / max(len(vols) - 1, 1)
@@ -915,53 +975,6 @@ def send_msg(text):
 # ── Telegram: Reporte de sesión (mejorado v2) ────────────────────────
 
 
-def send_session_report(state, nowstr, balance, today):
-    """Envía reporte de sesión"""
-    lines = [f'📊 REPORTE — {nowstr}']
-    totalpnl = 0.0
-
-    for p in PAIRS:
-        ps = state.get(p['symbol'], {})
-        pos = ps.get('position', 'FLAT')
-        sig = ps.get('signal', 'WAIT')
-        price = ps.get('price', 0)
-        rsi = ps.get('rsi', 0)
-        adx = ps.get('adx', 0)
-        pnl = ps.get('sessionpnl', 0.0)
-
-        if ps.get('tradesdate') == today:
-            totalpnl += pnl
-
-        icon = '🟢' if pos == 'LONG' else '🔴' if pos == 'SHORT' else '⚪'
-        s = '+' if pnl >= 0 else ''
-        lines.append(
-            f'{icon} {
-                p["fsym"]}: ${price} | RSI:{rsi} | ADX:{adx} | {sig} | PnL:{s}{
-                round(
-                    pnl,
-                    2)}')
-
-    s = '+' if totalpnl >= 0 else ''
-    lines.append(f'📊 PnL hoy: {s}{round(totalpnl, 2)} USDT')
-    lines.append(f'💰 Límite diario: {DAILY_LOSS_LIMIT}')
-
-    if isinstance(balance, dict):
-        total = balance.get('total', 0)
-        available = balance.get('available', 0)
-        margin_pct = balance.get(
-            'marginpct', balance.get(
-                'margin_pct', 0))  # Probar ambas claves
-        lines.append(
-            f'💰 Balance: ${
-                balance["total"]} | Libre: ${
-                balance["available"]} | Margen: {
-                balance.get(
-                    "margin_pct",
-                    0)}%')
-    sendmsg(build_msg(lines))
-
-
-def open_long(pair, ps, price, sl, tp, ta):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
     qty = round(ta * LEVERAGE / price, dec)
     halfway = price + (tp - price) * 0.5
@@ -1784,3 +1797,104 @@ def calc_pnl_net(pos, entry, price, trade_amount, leverage):
     pnl_usd = trade_amount * leverage * pnlpct_net / 100
     return pnlpct_net, pnl_usd
 
+# ── Telegram: Reporte con MACD fuerza/debilidad ─────────────────────
+def send_session_report(state, nowstr, balance, today):
+    """
+    Reporte inteligente + MACD: detecta si movimiento se fortalece/debilita.
+    - Si hay posiciones: siempre envía (cada 30 min)
+    - Si no hay posiciones: solo cada 2 ciclos (cada 1 hora)
+    """
+    # Verificar si hay posiciones abiertas
+    has_positions = any(
+        state.get(p['symbol'], {}).get('position', 'FLAT') != 'FLAT'
+        for p in PAIRS
+    )
+
+    # Control de frecuencia si no hay posiciones
+    if not has_positions:
+        cycle_count = state.get('report_cycle_count', 0) + 1
+        state['report_cycle_count'] = cycle_count
+        if cycle_count % 2 != 0:
+            return
+    else:
+        state['report_cycle_count'] = 0
+
+    lines = [f'📊 REPORTE — {nowstr}']
+    totalpnl = 0.0
+    open_count = 0
+
+    for p in PAIRS:
+        ps = state.get(p['symbol'], {})
+        pos = ps.get('position', 'FLAT')
+        sig = ps.get('signal', 'WAIT')
+        price = ps.get('price', 0)
+        pnl = ps.get('session_pnl', 0.0)
+
+        totalpnl += pnl if ps.get('trades_date') == today else 0
+
+        # Solo mostrar detalles de posiciones abiertas
+        if pos != 'FLAT':
+            open_count += 1
+            entry = ps.get('entry_price', 0)
+
+            if pos == 'LONG':
+                pnl_pct = ((price - entry) / entry * 100) if entry else 0
+                icon = '🟢'
+            else:  # SHORT
+                pnl_pct = ((entry - price) / entry * 100) if entry else 0
+                icon = '🔴'
+
+            s = '+' if pnl >= 0 else ''
+
+            # NUEVO: Calcular MACD y detectar fuerza/debilidad
+            macd_status = '❓ SIN DATA'
+            try:
+                closes = ps.get('closes', [])[-50:]  # Suficiente para MACD
+                if len(closes) >= 26:
+                    macd_line, signal_line, hist = talib.MACD(
+                        np.array(closes, dtype=float), 
+                        fastperiod=12, slowperiod=26, signalperiod=9
+                    )
+                    macd_hist = hist[-1]
+                    prev_hist = hist[-2]
+                    adx = ps.get('adx', 0)
+                    
+                    if macd_hist > prev_hist * 1.05 and adx > 20:  # +5% crecimiento
+                        macd_status = '💪 FUERTE'
+                    elif macd_hist < prev_hist * 0.95 and adx > 20:  # -5% decrecimiento
+                        macd_status = '😟 DEBIL'
+                    else:
+                        macd_status = '➡️ ESTABLE'
+            except Exception as e:
+                macd_status = f'❌ ERR'
+
+            lines.append(
+                f'{icon} {p["fsym"]} {pos} @ ${round(entry,2)} → ${round(price,2)} '
+                f'({pnl_pct:+.2f}%) | PnL: {s}{round(pnl,2)} USDT | MACD: {macd_status}'
+            )
+
+    # Si no hay posiciones, mostrar señales activas
+    if open_count == 0:
+        lines.append('⚪ Sin posiciones abiertas')
+        active_signals = []
+        for p in PAIRS:
+            ps = state.get(p['symbol'], {})
+            sig = ps.get('signal', 'WAIT')
+            if sig in ['BUY', 'SELL', 'LONG_ACTIVE', 'SHORT_ACTIVE']:
+                active_signals.append(f'{p["fsym"]}: {sig}')
+
+        if active_signals:
+            lines.append(f'📡 Señales: {", ".join(active_signals[:3])}')
+
+    # PnL del día
+    s = '+' if totalpnl >= 0 else ''
+    lines.append(f'💵 PnL hoy: {s}{round(totalpnl,2)} USDT | Límite: {DAILY_LOSS_LIMIT}')
+
+    # Balance
+    if isinstance(balance, dict):
+        lines.append(
+            f'💰 ${balance["total"]} (Libre: ${balance["available"]}, '
+            f'Margen: {balance["margin_pct"]:.1f}%)'
+        )
+
+    send_msg(build_msg(lines))
