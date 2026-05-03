@@ -735,7 +735,8 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
 
 # ── MACD: Filtro de confirmación ──────────────────────────────────────────────
 MIN_PROFIT_MACD_EXIT = 0.3  # % mínimo de ganancia para salida anticipada por MACD
-MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '50'))      # Diferencia mínima entre MACD y señal para confirmar entrada  # % mínimo de ganancia para salida anticipada por MACD
+MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '50'))      # Diferencia mínima entre MACD y señal para confirmar entrada
+MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.3'))  # Histograma cae al 30% del anterior → salida anticipada  # % mínimo de ganancia para salida anticipada por MACD
 
 def compute_macd(closes, fast=12, slow=26, signal=9):
     closes = list(closes)
