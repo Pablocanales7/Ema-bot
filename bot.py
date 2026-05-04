@@ -19,7 +19,7 @@ FEE_BUFFER_PCT = 0.10     # en pct descontado de pnlpct bruto
 
 
 cycle_count = 0
-REPORT_EVERY_N_CYCLES = 6  # Reportar cada 6 ciclos (6 × 5min = 30 min)
+REPORT_EVERY_N_CYCLES = 4  # Reportar cada 6 ciclos (6 × 5min = 30 min)
 
 # Control de loop
 running = True
@@ -36,8 +36,8 @@ def signal_handler(sig, frame):
 
 
 # Intervalos de check (en segundos)
-CHECK_INTERVAL_WITH_POSITIONS = 300    # 5 minutos
-CHECK_INTERVAL_NO_POSITIONS = 1800     # 30 minutos
+CHECK_INTERVAL_WITH_POSITIONS = 180    # 5 minutos
+CHECK_INTERVAL_NO_POSITIONS = 900     # 30 minutos
 
 
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
@@ -45,16 +45,16 @@ TELEGRAM_CHAT = os.environ['TELEGRAM_CHAT_ID']
 API_KEY = os.environ.get('BINANCE_API_KEY', '')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
 AUTO_TRADE = os.environ.get('AUTO_TRADE', 'false').lower() == 'true'
-TRADE_AMOUNT = float(os.environ.get('TRADE_AMOUNT', '15'))
+TRADE_AMOUNT = float(os.environ.get('TRADE_AMOUNT', '10'))
 TRADE_PCT = float(os.environ.get('TRADE_PCT', '0'))
 LEVERAGE = int(os.environ.get('LEVERAGE', '10'))
-MAX_TRADES_DAY = int(os.environ.get('MAX_DAILY_TRADES', '3'))
-MAX_OPEN_POS = int(os.environ.get('MAX_OPEN_POSITIONS', '3'))
-MAX_ALT_POS = int(os.environ.get('MAX_ALT_POSITIONS', '2'))
-RSI_MIN = float(os.environ.get('RSI_ENTRY_MIN', '42'))
-RSI_MAX = float(os.environ.get('RSI_ENTRY_MAX', '47'))
+MAX_TRADES_DAY = int(os.environ.get('MAX_DAILY_TRADES', '12'))
+MAX_OPEN_POS = int(os.environ.get('MAX_OPEN_POSITIONS', '2'))
+MAX_ALT_POS = int(os.environ.get('MAX_ALT_POSITIONS', '1'))
+RSI_MIN = float(os.environ.get('RSI_ENTRY_MIN', '48'))
+RSI_MAX = float(os.environ.get('RSI_ENTRY_MAX', '52'))
 TRAIL_MULT = float(os.environ.get('TRAIL_ATR_MULT', '1.5'))
-ADX_MIN = float(os.environ.get('ADX_MIN', '10'))
+ADX_MIN = float(os.environ.get('ADX_MIN', '18'))
 DAILY_LOSS_LIMIT = float(os.environ.get('DAILY_LOSS_LIMIT', '-30'))
 SL_COOLDOWN_HOURS = int(os.environ.get('SL_COOLDOWN_HOURS', '12'))
 VOL_MULT = float(os.environ.get('VOL_MULT', '1.2'))
@@ -64,13 +64,13 @@ USE_VOLUME_FILTER = os.environ.get(
     'false').lower() == 'true'
 USE_BTC_FILTER = os.environ.get('USE_BTC_FILTER', 'false').lower() == 'true'
 RECV_WINDOW = int(os.environ.get('RECV_WINDOW', '10000'))
-MAX_CANDLES_LATE = int(os.environ.get('MAX_CANDLES_LATE', '20'))
+MAX_CANDLES_LATE = int(os.environ.get('MAX_CANDLES_LATE', '2'))
 USE_MOMENTUM = os.environ.get(
     'USE_MOMENTUM_DETECTION',
     'true').lower() == 'true'
-MOMENTUM_THRESHOLD = float(os.environ.get('MOMENTUM_THRESHOLD', '0.015'))
-MOMENTUM_ADX_MIN = float(os.environ.get('MOMENTUM_ADX_MIN', '18'))
-TIMEFRAME_HOURS = int(os.environ.get('TIMEFRAME_HOURS', '4'))
+MOMENTUM_THRESHOLD = float(os.environ.get('MOMENTUM_THRESHOLD', '0.008'))
+MOMENTUM_ADX_MIN = float(os.environ.get('MOMENTUM_ADX_MIN', '16'))
+TIMEFRAME_HOURS = int(os.environ.get('TIMEFRAME_HOURS', '1'))
 
 PAIRS = [
     {'symbol': 'BTCUSDT', 'fsym': 'BTC', 'dec': 3},
@@ -735,8 +735,8 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
 
 # ── MACD: Filtro de confirmación ──────────────────────────────────────────────
 MIN_PROFIT_MACD_EXIT = 0.3  # % mínimo de ganancia para salida anticipada por MACD
-MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '50'))      # Diferencia mínima entre MACD y señal para confirmar entrada
-MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.3'))  # Histograma cae al 30% del anterior → salida anticipada  # % mínimo de ganancia para salida anticipada por MACD
+MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '20'))      # Diferencia mínima entre MACD y señal para confirmar entrada
+MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.6'))  # Histograma cae al 30% del anterior → salida anticipada  # % mínimo de ganancia para salida anticipada por MACD
 
 def compute_macd(closes, fast=12, slow=26, signal=9):
     closes = list(closes)
