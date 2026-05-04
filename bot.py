@@ -267,7 +267,7 @@ def market_order(symbol, side, qty):
         return {}
 
 
-def fetchcandles(symbol, aggregate=4, limit=200):
+def fetchcandles(symbol, aggregate=1, limit=200):
     url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=USDT&limit={limit}&aggregate={aggregate}&e=Binance"
     try:
         r = requests.get(url, timeout=15)
@@ -1276,6 +1276,19 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
 
     sig = get_signal(e21, e89, rsi14, RSI_MIN, RSI_MAX)
     vcr = velas_desde_cruce(e21, e89)
+
+    macd, sigmacd, hist = compute_macd(closes)
+    if macd is not None and sigmacd is not None and hist is not None:
+    	macd_dir = 'ALCISTA' if macd > sigmacd else 'BAJISTA'
+    	strength = abs(macd - sigmacd)
+    	ok_long = macd > sigmacd and strength >= MIN_MACD_STRENGTH
+    	ok_short = macd < sigmacd and strength >= MIN_MACD_STRENGTH
+    	print(
+        f' [{sym}] MACD{macd_dir} | macd={round(macd,2)} '
+        f'fuerza={round(strength,2)} '
+        f'long_ok={ok_long} short_ok={ok_short}'
+    )    
+
     ps.update(
         {
             'signal': sig, 'price': round(
@@ -1769,7 +1782,6 @@ def main():
     print('\n🛑 Bot detenido correctamente')
 
 
-if __name__ == '__main__':
     main()
 
 def calc_pnl_net(pos, entry, price, trade_amount, leverage):
@@ -1784,3 +1796,44 @@ def calc_pnl_net(pos, entry, price, trade_amount, leverage):
     pnl_usd = trade_amount * leverage * pnlpct_net / 100
     return pnlpct_net, pnl_usd
 
+
+PROFIT_TARGET_USD = 1.0  # Cierra cuando PnL >= 1 USDT (6.67% con 15USD x 10x)
+
+def should_close_profit(position, entry, price):
+    """Retorna True si ganancia >= 1 USDT con trade 15 USD x 10x leverage"""
+    if not entry:
+        return False
+    
+    if position == "LONG":
+        pnl_pct = (price - entry) / entry * 100
+    elif position == "SHORT":
+        pnl_pct = (entry - price) / entry * 100
+    else:
+        return False
+    
+    # PnL USD = 15 * 10 * pnl_pct / 100
+    pnl_usd = 15 * 10 * pnl_pct / 100
+    return pnl_usd >= PROFIT_TARGET_USD
+
+    # 🎯 TP FIJO 1 USD (PRIORIDAD)
+    if should_close_profit("LONG", entry, price):
+        print(f"🎯 TP 1USD LONG {pair['fsym']} PnL: {round(pnlu, 2)}")
+        sendmsg(buildmsg(f"🎯 TP FIJO 1USD — LONG {pair['fsym']}/USDT | PnL ${round(pnlu, 2)} | {nowstr}")) 
+        if AUTOTRADE and APIKEY:
+            closeposition(pair, ps, price, "TP fijo 1USD")
+        else:
+            ps.update(position="FLAT", entryprice=None, entryqty=None, initialsl=None, tptarget=None, trailingsl=None, partialclosed=False, tradeamountused=None)
+        return True
+
+    # 🎯 TP FIJO 1 USD (PRIORIDAD)
+    if should_close_profit("SHORT", entry, price):
+        print(f"🎯 TP 1USD SHORT {pair['fsym']} PnL: {round(pnlu, 2)}")
+        sendmsg(buildmsg(f"🎯 TP FIJO 1USD — SHORT {pair['fsym']}/USDT | PnL ${round(pnlu, 2)} | {nowstr}"))
+        if AUTOTRADE and APIKEY:
+            closeshort(pair, ps, price, "TP fijo 1USD")
+        else:
+            ps.update(position="FLAT", entryprice=None, entryqty=None, initialsl=None, tptarget=None, trailingsl=None, partialclosed=False, tradeamountused=None)
+        return True
+
+if __name__ == '__main__':
+    main()
