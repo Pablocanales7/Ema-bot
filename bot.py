@@ -218,68 +218,6 @@ def get_futures_balance():
         print(f' [Balance] Error: {exc}')
         return None
 
-def sync_positions_from_binance(state):
-    """Sincroniza posiciones reales de Binance con state.json"""
-    if not APIKEY or not APISECRET:
-        print("Sync: Sin API keys, saltando")
-        return
-
-    try:
-        ts = int(time.time() * 1000)
-        params = f"timestamp={ts}&recvWindow={RECVWINDOW}"
-        signature = signparams(params)  # Reusa tu función signparams
-        url = f"https://fapi.binance.com/fapi/v2/positionRisk?{params}&signature={signature}"
-        headers = {"X-MBX-APIKEY": APIKEY}
-        r = requests.get(url, headers=headers, timeout=10)
-        r.raise_for_status()
-        positions = r.json()
-
-        print("Sync: Posiciones Binance:", len([p for p in positions if float(p['positionAmt']) != 0]))
-
-        for pos_binance in positions:
-            symbol = pos_binance['symbol']
-            amt = float(pos_binance['positionAmt'])
-            entry_price = float(pos_binance['entryPrice']) if pos_binance['entryPrice'] != '0' else None
-            unrealized_pnl = float(pos_binance['unRealizedProfit'])
-
-            if symbol not in [p["symbol"] for p in PAIRS]:
-                continue
-
-            ps = state.get(symbol, {})
-            if abs(amt) > 0.001:  # Posición abierta
-                side = 'LONG' if amt > 0 else 'SHORT'
-                print(f"Sync: {symbol} {side} real, amt={amt}, entry={entry_price}")
-                ps.update({
-                    'position': side,
-                    'entryprice': entry_price,
-                    'entryqty': abs(amt),
-                    'sessionpnl': unrealized_pnl,
-                    'tradeamountused': abs(amt) * entry_price
-                })
-            else:  # Cerrada en Binance
-                if ps.get('position') in ['LONG', 'SHORT']:
-                    print(f"Sync: {symbol} cerrada en Binance, limpiando local")
-                    ps.update({
-                        'position': 'FLAT', 'entryprice': None, 'entryqty': None,
-                        'initialsl': None, 'tptarget': None, 'trailingsl': None,
-                        'partialclosed': False, 'tradeamountused': None
-                    })
-
-        # Limpia posiciones solo locales
-        for symbol in [p["symbol"] for p in PAIRS]:
-            ps = state.get(symbol, {})
-            if ps.get('position') in ['LONG', 'SHORT']:
-                binance_pos = next((p for p in positions if p['symbol'] == symbol and float(p['positionAmt']) != 0), None)
-                if not binance_pos:
-                    print(f"Sync: {symbol} solo local, asumiendo cerrada")
-                    ps.update({'position': 'FLAT', 'entryprice': None, 'entryqty': None,
-                              'initialsl': None, 'tptarget': None, 'trailingsl': None,
-                              'partialclosed': False, 'tradeamountused': None})
-
-        print("Sync: Estado actualizado con Binance")
-
-    except Exception as e:
-        print(f"Sync error: {e}")
 
 def resolve_trade_amount(balance):
     bal_num = balance['available'] if isinstance(balance, dict) else balance
@@ -1704,7 +1642,6 @@ def run_bot_cycle():
     print('=' * 55)
 
     state = load_state()
-    sync_positions_from_binance(state)  # NUEVA: Valida posiciones con Binance
     balance = get_futures_balance() if API_KEY else None
     btc_signal = None  # señal de BTC en este ciclo
 
