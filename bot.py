@@ -1664,7 +1664,9 @@ def run_bot_cycle():
     print('=' * 55)
 
     state = load_state()
-    balance = get_futures_balance() if API_KEY else None
+    balance = get_futures_balance(
+        state = sync_positions_with_binance(state)  # Sync Binance
+        ) if API_KEY else None
     btc_signal = None  # señal de BTC en este ciclo
 
     # Check daily loss
