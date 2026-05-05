@@ -218,6 +218,37 @@ def get_futures_balance():
         print(f' [Balance] Error: {exc}')
         return None
 
+def sync_positions_with_binance(state):
+    """Sync state con Binance positionRisk"""
+    if not API_KEY: 
+        print("[SYNC] Sin API")
+        return state
+    try:
+        ts = int(time.time()*1000)
+        params = f'timestamp={ts}&recvWindow={RECV_WINDOW}'
+        sig = _sign(params)
+        r = requests.get(f'https://fapi.binance.com/fapi/v2/positionRisk?{params}&signature={sig}',
+                        headers={'X-MBX-APIKEY': API_KEY}, timeout=10)
+        positions = r.json()
+        print("[SYNC] Binance positions...")
+        for p in positions:
+            sym = p['symbol']
+            if sym.endswith('USDT') and any(pair['symbol']==sym for pair in PAIRS):
+                size = float(p['positionAmt'])
+                if abs(size)>0.001:
+                    side = 'LONG' if size>0 else 'SHORT'
+                    if sym not in state: state[sym]={**EMPTY_STATE}
+                    ps = state[sym]
+                    if ps.get('position') != side:
+                        print(f"[SYNC] {side} {sym} qty={size}")
+                        ps.update({'position':side, 'entry_price':float(p['entryPrice']), 'entry_qty':abs(size)})
+                else:
+                    if sym in state and state[sym].get('position') in ('LONG','SHORT'):
+                        print(f"[SYNC] Closed {sym}")
+                        state[sym].update({'position':'FLAT','entry_price':None,'entry_qty':None})
+        print("[SYNC] OK")
+    except Exception as e: print(f"[SYNC] {e}")
+    return state
 
 def resolve_trade_amount(balance):
     bal_num = balance['available'] if isinstance(balance, dict) else balance
@@ -1664,9 +1695,8 @@ def run_bot_cycle():
     print('=' * 55)
 
     state = load_state()
-    balance = get_futures_balance(
-        state = sync_positions_with_binance(state)  # Sync Binance
-        ) if API_KEY else None
+    state = sync_positions_with_binance(state)  # Sync Binance
+    balance = get_futures_balance() if API_KEY else None
     btc_signal = None  # señal de BTC en este ciclo
 
     # Check daily loss
