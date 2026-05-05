@@ -19,7 +19,7 @@ FEE_BUFFER_PCT = 0.10     # en pct descontado de pnlpct bruto
 
 
 cycle_count = 0
-REPORT_EVERY_N_CYCLES = 4  # Reportar cada 6 ciclos (6 × 5min = 30 min)
+REPORT_EVERY_N_CYCLES = 2  # Reportar cada 6 ciclos (6 × 5min = 30 min)
 
 # Control de loop
 running = True
@@ -37,7 +37,7 @@ def signal_handler(sig, frame):
 
 # Intervalos de check (en segundos)
 CHECK_INTERVAL_WITH_POSITIONS = 180    # 5 minutos
-CHECK_INTERVAL_NO_POSITIONS = 900     # 30 minutos
+CHECK_INTERVAL_NO_POSITIONS = 900     # 15 minutos
 
 
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
@@ -532,7 +532,7 @@ def check_market_reversal_exits(
         else:  # SHORT
             pnl_pct = (entry - price) / entry * 100
 
-        ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+        ta = ps.get('trade_amount_used') or TRADE_AMOUNT
         pnl_u = ta * LEVERAGE * pnl_pct / 100
 
         # BTC cambió a alcista → cerrar SHORTs en ganancia
@@ -559,7 +559,10 @@ def check_market_reversal_exits(
                            'trailing_sl': None,
                            'partial_closed': False,
                            'trade_amount_used': None,
-                           'entry_time': None})
+                           'entry_time': None,
+			   'signal': 'WAIT',      # 🔥 NUEVO: Reset signal
+    			   'last_signal': 'WAIT'  # 🔥 NUEVO: Reset last_signal
+		})
 
         # BTC cambió a bajista → cerrar LONGs en ganancia
         elif not btc_bull_now and pos == 'LONG' and pnl_pct > 0:
@@ -638,7 +641,7 @@ def check_btc_long_signal_exits(state, btc_signal, now_str, now_dt):
 
         # PnL de la posición SHORT
         pnl_pct = (entry - price) / entry * 100
-        ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+        ta = ps.get('trade_amount_used') or TRADE_AMOUNT
         pnl_u = ta * LEVERAGE * pnl_pct / 100
 
         if pnl_pct <= 0:
@@ -717,7 +720,7 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
 
         # PnL de la posición LONG
         pnl_pct = (price - entry) / entry * 100
-        ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+        ta = ps.get('trade_amount_used') or TRADE_AMOUNT
         pnl_u = ta * LEVERAGE * pnl_pct / 100
 
         if pnl_pct <= 0:
@@ -1030,7 +1033,7 @@ def close_position(pair, ps, price, reason, partial=False):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
     entry = ps['entry_price'] or price
     qty = ps.get('entry_qty') or 0
-    ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+    ta = ps.get('trade_amount_used') or TRADE_AMOUNT
     factor = 0.5 if partial else (0.5 if ps['partial_closed'] else 1.0)
     sell_qty = round(qty * factor, dec)
     if sell_qty <= 0:
@@ -1105,7 +1108,7 @@ def close_short(pair, ps, price, reason, partial=False):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
     entry = ps['entry_price'] or price
     qty = ps.get('entry_qty') or 0
-    ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+    ta = ps.get('trade_amount_used') or TRADE_AMOUNT
     factor = 0.5 if partial else (0.5 if ps['partial_closed'] else 1.0)
     buy_qty = round(qty * factor, dec)
     if buy_qty <= 0:
@@ -1147,7 +1150,7 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
     partial = ps['partial_closed']
     if None in (entry, tp, trail):
         return False
-    ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+    ta = ps.get('trade_amount_used') or TRADE_AMOUNT
     pnl_pct = (price - entry) / entry * 100
     pnl_u = ta * LEVERAGE * pnl_pct / 100
     new_trail = price - atr * TRAIL_MULT
@@ -1207,7 +1210,7 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
     partial = ps['partial_closed']
     if None in (entry, tp, trail):
         return False
-    ta = ps.get('trade_amount_used', TRADE_AMOUNT)
+    ta = ps.get('trade_amount_used') or TRADE_AMOUNT
     pnl_pct = (entry - price) / entry * 100
     pnl_u = ta * LEVERAGE * pnl_pct / 100
     new_trail = price + atr * TRAIL_MULT
@@ -1655,7 +1658,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             open_long(pair, ps, price, sl_long, tp_long, ta_now)
             print(f'✅ ABIERTO LONG {fsym}: momentum + MACD alcista')
         elif want_long:
-            print(f' [LONG] ⛔ Bloqueado {fsym}: sin momentum o MACD no alcista')
+            print(f' [LONG] ⛔ Bloqueado {fsym}: sin momentum/MACD alcista')
             ps['last_signal'] = sig
             return ps
 
@@ -1663,7 +1666,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             open_short(pair, ps, price, sl_short, tp_short, ta_now)
             print(f'✅ ABIERTO SHORT {fsym}: momentum + MACD bajista')
         elif want_short:
-            print(f' [SHORT] ⛔ Bloqueado {fsym}: sin momentum o MACD no bajista')
+            print(f' [SHORT] ⛔ Bloqueado {fsym}: sin momentum/MACD bajista')
             ps['last_signal'] = sig
             return ps
 
@@ -1776,10 +1779,10 @@ def main():
     global running
 
     print('=' * 70)
-    print('🤖 EMA Bot v10.2 - Loop Inteligente INICIADO')
+    print('🤖 EMA Bot - Iniciado')
     print('=' * 70)
-    print(f'Check con posiciones: {CHECK_INTERVAL_WITH_POSITIONS}s (5 min)')
-    print(f'Check sin posiciones: {CHECK_INTERVAL_NO_POSITIONS}s (30 min)')
+    print(f'Check con posiciones: {CHECK_INTERVAL_WITH_POSITIONS}s (3 min)')
+    print(f'Check sin posiciones: {CHECK_INTERVAL_NO_POSITIONS}s (15 min)')
     print('=' * 70)
 
     while running:
@@ -1793,14 +1796,14 @@ def main():
                 next_check = datetime.now(
                     timezone.utc) + timedelta(seconds=interval)
                 print(
-                    f'\n⏰ Posiciones activas. Próximo check en 5 min ({
+                    f'\n⏰ Posiciones activas. Próximo check en 3 min ({
                         next_check.strftime("%H:%M UTC")})')
             else:
                 interval = CHECK_INTERVAL_NO_POSITIONS
                 next_check = datetime.now(
                     timezone.utc) + timedelta(seconds=interval)
                 print(
-                    f'\n⏰ Sin posiciones. Próximo check en 30 min ({
+                    f'\n⏰ Sin posiciones. Próximo check en 15 min ({
                         next_check.strftime("%H:%M UTC")})')
 
             # Sleep con check cada 10s para señales
