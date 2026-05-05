@@ -1145,6 +1145,35 @@ def close_short(pair, ps, price, reason, partial=False):
                        'trade_amount_used': None})
 
 
+# ── TP Fijo: helpers de PnL ──────────────────────────────────────────────────
+PROFIT_TARGET_USD = 1.0
+
+def calc_pnl_net(pos, entry, price, trade_amount, leverage):
+    if not entry or entry <= 0:
+        return 0.0, 0.0
+    if pos == "LONG":
+        pnlpct_gross = (price - entry) / entry * 100
+    else:
+        pnlpct_gross = (entry - price) / entry * 100
+    pnlpct_net = pnlpct_gross - FEE_BUFFER_PCT
+    pnl_usd = trade_amount * leverage * pnlpct_net / 100
+    return pnlpct_net, pnl_usd
+
+def should_close_profit(position, entry, price, trade_amount=None, leverage=None):
+    if not entry:
+        return False
+    ta = trade_amount or TRADE_AMOUNT
+    lev = leverage or LEVERAGE
+    if position == "LONG":
+        pnl_pct = (price - entry) / entry * 100
+    elif position == "SHORT":
+        pnl_pct = (entry - price) / entry * 100
+    else:
+        return False
+    pnl_usd = ta * lev * pnl_pct / 100
+    return pnl_usd >= PROFIT_TARGET_USD
+
+
 def manage_open(pair, ps, price, atr, now_str, now_dt):
     entry, tp, trail = ps['entry_price'], ps['tp_target'], ps['trailing_sl']
     partial = ps['partial_closed']
@@ -1175,6 +1204,23 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
                             2)}']))
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, '50% TP', partial=True)
+        return True
+    ta_chk = ps.get('trade_amount_used') or TRADE_AMOUNT
+    entry_chk = ps.get('entry_price')
+    if entry_chk and should_close_profit('LONG', entry_chk, price, ta_chk, LEVERAGE):
+        pnl_pct_tp, pnl_u_tp = calc_pnl_net('LONG', entry_chk, price, ta_chk, LEVERAGE)
+        print(f' [TP FIJO] LONG {pair["fsym"]} PnL: +${round(pnl_u_tp, 2)}')
+        send_msg(build_msg([
+            f'🎯 TP FIJO 1USD — {pair["fsym"]}/USDT',
+            f'💰 PnL: +${round(pnl_u_tp, 2)} USDT ({round(pnl_pct_tp, 2)}%)',
+            f'📊 Entrada: ${round(entry_chk, 2)} | Actual: ${round(price, 2)}',
+        ]))
+        if AUTO_TRADE and API_KEY:
+            close_position(pair, ps, price, 'TP fijo 1USD')
+        else:
+            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                       'partial_closed': False, 'trade_amount_used': None})
         return True
     if price <= trail:
         ps['last_sl_time'] = now_dt.isoformat()
@@ -1235,6 +1281,23 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
                             2)}']))
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, '50% TP', partial=True)
+        return True
+    ta_chk = ps.get('trade_amount_used') or TRADE_AMOUNT
+    entry_chk = ps.get('entry_price')
+    if entry_chk and should_close_profit('SHORT', entry_chk, price, ta_chk, LEVERAGE):
+        pnl_pct_tp, pnl_u_tp = calc_pnl_net('SHORT', entry_chk, price, ta_chk, LEVERAGE)
+        print(f' [TP FIJO] SHORT {pair["fsym"]} PnL: +${round(pnl_u_tp, 2)}')
+        send_msg(build_msg([
+            f'🎯 TP FIJO 1USD — {pair["fsym"]}/USDT',
+            f'💰 PnL: +${round(pnl_u_tp, 2)} USDT ({round(pnl_pct_tp, 2)}%)',
+            f'📊 Entrada: ${round(entry_chk, 2)} | Actual: ${round(price, 2)}',
+        ]))
+        if AUTO_TRADE and API_KEY:
+            close_short(pair, ps, price, 'TP fijo 1USD')
+        else:
+            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                       'partial_closed': False, 'trade_amount_used': None})
         return True
     if price >= trail:
         ps['last_sl_time'] = now_dt.isoformat()
@@ -1828,56 +1891,6 @@ def main():
 
     main()
 
-def calc_pnl_net(pos, entry, price, trade_amount, leverage):
-    # Calcula PnL NETO descontando fees Binance taker 0.05%
-    if not entry or entry <= 0:
-        return 0.0, 0.0
-    if pos == 'LONG':
-        pnlpct_gross = (price - entry) / entry * 100
-    else:
-        pnlpct_gross = (entry - price) / entry * 100
-    pnlpct_net = pnlpct_gross - FEE_BUFFER_PCT
-    pnl_usd = trade_amount * leverage * pnlpct_net / 100
-    return pnlpct_net, pnl_usd
-
-
-PROFIT_TARGET_USD = 1.0  # Cierra cuando PnL >= 1 USDT (6.67% con 15USD x 10x)
-
-def should_close_profit(position, entry, price):
-    """Retorna True si ganancia >= 1 USDT con trade 15 USD x 10x leverage"""
-    if not entry:
-        return False
-    
-    if position == "LONG":
-        pnl_pct = (price - entry) / entry * 100
-    elif position == "SHORT":
-        pnl_pct = (entry - price) / entry * 100
-    else:
-        return False
-    
-    # PnL USD = 15 * 10 * pnl_pct / 100
-    pnl_usd = 15 * 10 * pnl_pct / 100
-    return pnl_usd >= PROFIT_TARGET_USD
-
-    # 🎯 TP FIJO 1 USD (PRIORIDAD)
-    if should_close_profit("LONG", entry, price):
-        print(f"🎯 TP 1USD LONG {pair['fsym']} PnL: {round(pnlu, 2)}")
-        sendmsg(buildmsg(f"🎯 TP FIJO 1USD — LONG {pair['fsym']}/USDT | PnL ${round(pnlu, 2)} | {nowstr}")) 
-        if AUTOTRADE and APIKEY:
-            closeposition(pair, ps, price, "TP fijo 1USD")
-        else:
-            ps.update(position="FLAT", entryprice=None, entryqty=None, initialsl=None, tptarget=None, trailingsl=None, partialclosed=False, tradeamountused=None)
-        return True
-
-    # 🎯 TP FIJO 1 USD (PRIORIDAD)
-    if should_close_profit("SHORT", entry, price):
-        print(f"🎯 TP 1USD SHORT {pair['fsym']} PnL: {round(pnlu, 2)}")
-        sendmsg(buildmsg(f"🎯 TP FIJO 1USD — SHORT {pair['fsym']}/USDT | PnL ${round(pnlu, 2)} | {nowstr}"))
-        if AUTOTRADE and APIKEY:
-            closeshort(pair, ps, price, "TP fijo 1USD")
-        else:
-            ps.update(position="FLAT", entryprice=None, entryqty=None, initialsl=None, tptarget=None, trailingsl=None, partialclosed=False, tradeamountused=None)
-        return True
 
 if __name__ == '__main__':
     main()
