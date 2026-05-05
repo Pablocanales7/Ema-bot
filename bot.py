@@ -1614,20 +1614,29 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         if ps['trades_today'] >= MAX_TRADES_DAY:
             ps['last_signal'] = sig
             return ps
-        if want_long:
-            if macd_confirmed_long(closes):
-                open_long(pair, ps, price, sl_long, tp_long, ta_now)
-            else:
-                print(f' [MACD] ⛔ LONG bloqueado {fsym} — momentum bajista')
-                ps['last_signal'] = sig
-                return ps
-        if want_short:
-            if macd_confirmed_short(closes):
-                open_short(pair, ps, price, sl_short, tp_short, ta_now)
-            else:
-                print(f' [MACD] ⛔ SHORT bloqueado {fsym} — momentum alcista')
-                ps['last_signal'] = sig
-                return ps
+
+        # 🆕 MODIF: Momentum valida SOLO dirección MACD (no fuerza MIN=20)
+        macd, sigmacd, hist = compute_macd(closes)
+        macd_long_dir = macd is not None and sigmacd is not None and macd > sigmacd  # Solo alcista
+        macd_short_dir = macd is not None and sigmacd is not None and macd < sigmacd  # Solo bajista
+
+        if want_long and momentum_detected and macd_long_dir:
+            open_long(pair, ps, price, sl_long, tp_long, ta_now)
+            print(f'✅ ABIERTO LONG {fsym}: momentum + MACD alcista')
+        elif want_long:
+            print(f' [LONG] ⛔ Bloqueado {fsym}: sin momentum o MACD no alcista')
+            ps['last_signal'] = sig
+            return ps
+
+        if want_short and momentum_detected and macd_short_dir:
+            open_short(pair, ps, price, sl_short, tp_short, ta_now)
+            print(f'✅ ABIERTO SHORT {fsym}: momentum + MACD bajista')
+        elif want_short:
+            print(f' [SHORT] ⛔ Bloqueado {fsym}: sin momentum o MACD no bajista')
+            ps['last_signal'] = sig
+            return ps
+
+
 
     ps['last_signal'] = sig
     return ps
