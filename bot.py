@@ -1,4 +1,4 @@
-# EMA Bot v10.2 + Momentum + Bugfix
+# EMA Bot v10.3 + Momentum Direccional + Bugfix
 import requests
 import json
 import os
@@ -23,7 +23,7 @@ running = True
 
 def signal_handler(sig, frame):
     global running
-    print('\n[SIGNAL] Recibida señal de terminación. Cerrando...')
+    print('\\n[SIGNAL] Recibida señal de terminación. Cerrando...')
     running = False
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -62,7 +62,8 @@ TIMEFRAME_HOURS = int(os.environ.get('TIMEFRAME_HOURS', '1'))
 MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '20'))
 MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.6'))
 MIN_PROFIT_MACD_EXIT = 0.3
-PROFIT_TARGET_USD = 1.0
+LOCK_START_USD = float(os.environ.get('LOCK_START_USD', '0.5'))   # desde qué PnL empezar a asegurar
+LOCK_RATIO = float(os.environ.get('LOCK_RATIO', '0.8'))          # % del máximo PnL a asegurar (0.8 = 80%)
 
 PAIRS = [
     {'symbol': 'BTCUSDT', 'fsym': 'BTC', 'dec': 3},
@@ -94,6 +95,7 @@ EMPTY_STATE = {
     'atr': None,
     'adx': None,
     'velas_cruce': None,
+    'max_pnl_usd': 0.0,          # NUEVO: mejor PnL visto en esta posición
 }
 
 SIGNAL_LABEL = {
@@ -107,17 +109,11 @@ SIGNAL_LABEL = {
     'WAIT': 'SIN SENAL',
 }
 
-# ── State ──────────────────────────────────────────────────────────────────────
 # ── State dinámico ─────────────────────────────────────────────────────────────
-# Una única fuente de verdad en memoria (_state_cache).
-# Guardado atómico (tmp→rename) — nunca deja el JSON corrupto.
-# Guardado crítico inmediato en apertura/cierre de posición.
-
 _state_cache = {}
 _balance_cache = None
 
 def load_state():
-    """Solo carga desde disco la primera vez. Después devuelve cache en memoria."""
     global _state_cache
     if _state_cache:
         return _state_cache
@@ -144,10 +140,11 @@ def _build_config():
         'use_btc_filter': USE_BTC_FILTER, 'timeframe_hours': TIMEFRAME_HOURS,
         'use_momentum': USE_MOMENTUM, 'momentum_threshold': MOMENTUM_THRESHOLD,
         'momentum_adx_min': MOMENTUM_ADX_MIN,
+        'lock_start_usd': LOCK_START_USD,
+        'lock_ratio': LOCK_RATIO,
     }
 
 def _update_live_pnl(state):
-    """Recalcula PnL en tiempo real para cada posición abierta."""
     for p in PAIRS:
         ps = state.get(p['symbol'], {})
         pos = ps.get('position', 'FLAT')
@@ -163,7 +160,6 @@ def _update_live_pnl(state):
             ps['live_pnl_usd'] = 0.0
 
 def save_state(state, now_str, balance=None, reason=''):
-    """Guardado atómico con tmp→rename para evitar JSON corrupto."""
     global _state_cache, _balance_cache
     _state_cache = state
     if isinstance(balance, dict):
@@ -185,7 +181,6 @@ def save_state(state, now_str, balance=None, reason=''):
         print(f'[State] ⚠️ Error al guardar: {e}')
 
 def save_state_now(state, now_str, reason):
-    """Guardado crítico inmediato — llamar tras abrir/cerrar posición."""
     print(f'[State] 🔴 Crítico: {reason}')
     save_state(state, now_str, reason=reason)
 
@@ -437,28 +432,6 @@ def compute_macd(closes, fast=12, slow=26, signal=9):
     histogram = [macd_line[i + (len(macd_line) - min_len2)] - signal_line[i] for i in range(min_len2)]
     return macd_line[-1], signal_line[-1], histogram[-1]
 
-def macd_confirmed_long(closes):
-    macd, sig, hist = compute_macd(closes)
-    if macd is None:
-        return True
-    strength = macd - sig
-    confirmed = macd > sig and strength >= MIN_MACD_STRENGTH
-    status = '✅ ALCISTA' if macd > sig else '⛔ BAJISTA'
-    warn = '' if confirmed else f' (fuerza {round(strength,1)} < mín {MIN_MACD_STRENGTH})'
-    print(f' [MACD] {status} — macd={round(macd,2)} sig={round(sig,2)} fuerza={round(strength,2)}{warn}')
-    return confirmed
-
-def macd_confirmed_short(closes):
-    macd, sig, hist = compute_macd(closes)
-    if macd is None:
-        return True
-    strength = sig - macd
-    confirmed = macd < sig and strength >= MIN_MACD_STRENGTH
-    status = '✅ BAJISTA' if macd < sig else '⛔ ALCISTA'
-    warn = '' if confirmed else f' (fuerza {round(strength,1)} < mín {MIN_MACD_STRENGTH})'
-    print(f' [MACD] {status} — macd={round(macd,2)} sig={round(sig,2)} fuerza={round(strength,2)}{warn}')
-    return confirmed
-
 def macd_exit_signal(closes, position):
     macd, sig, hist = compute_macd(closes)
     if macd is None:
@@ -572,7 +545,6 @@ def sl_cooldown_active(ps, now):
     return False, 0
 
 def should_close_profit(position, entry, price):
-    """Retorna True si ganancia >= PROFIT_TARGET_USD"""
     if not entry:
         return False
     if position == 'LONG':
@@ -603,7 +575,7 @@ def escape_html(text):
 
 def build_msg(parts):
     safe_parts = [escape_html(p) for p in parts if p is not None]
-    return '\n'.join(safe_parts)
+    return 'n'.join(safe_parts)
 
 def send_msg(text):
     try:
@@ -636,14 +608,13 @@ def send_session_report(state, now_str, balance, today):
         price = ps.get('price', 0)
         rsi = ps.get('rsi', 0)
         adx = ps.get('adx', 0)
-        pnl = ps.get('session_pnl', 0.0)          # FIX: clave correcta
-        if ps.get('trades_date') == today:          # FIX: clave correcta
+        pnl = ps.get('session_pnl', 0.0)
+        if ps.get('trades_date') == today:
             total_pnl += pnl
         icon = '🟢' if pos == 'LONG' else '🔴' if pos == 'SHORT' else '⚪'
         s = '+' if pnl >= 0 else ''
         live_str = f' | {"🟩" if ps.get("live_pnl_usd",0)>=0 else "🟥"}{ps.get("live_pnl_pct",0):+.2f}%/${ps.get("live_pnl_usd",0):+.2f}' if pos in ('LONG','SHORT') else ''
         lines.append(f'{icon} {p["fsym"]}: ${price} | RSI:{rsi} | ADX:{adx} | {sig}{live_str} | Sess:{s}{round(pnl, 2)} | {ps.get("last_update","")}')
-
     s = '+' if total_pnl >= 0 else ''
     lines.append(f'📊 PnL hoy: {s}{round(total_pnl, 2)} USDT')
     lines.append(f'💰 Límite diario: {DAILY_LOSS_LIMIT}')
@@ -674,7 +645,6 @@ def open_long(pair, ps, price, sl, tp, ta):
             f' TP: ${round(tp, 2)} | SL: ${round(sl, 2)}',
             f' 50% TP: ${round(halfway, 2)} | ID: {oid}'
         ]))
-        # Guardar inmediatamente tras abrir posición
         _now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
         save_state_now(_state_cache, _now, f'LONG abierto {fsym} @ {round(price,2)}')
     else:
@@ -706,7 +676,9 @@ def close_position(pair, ps, price, reason, partial=False):
     if not partial:
         ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
                    'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                   'partial_closed': False, 'trade_amount_used': None})
+                   'partial_closed': False, 'trade_amount_used': None,'max_pnl_usd': 0.0,})
+    _now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    save_state_now(_state_cache, _now, f'LONG cerrado {fsym} — {reason}')
 
 def open_short(pair, ps, price, sl, tp, ta):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
@@ -760,7 +732,9 @@ def close_short(pair, ps, price, reason, partial=False):
     if not partial:
         ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
                    'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                   'partial_closed': False, 'trade_amount_used': None})
+                   'partial_closed': False, 'trade_amount_used': None,'max_pnl_usd': 0.0,})
+    _now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    save_state_now(_state_cache, _now, f'SHORT cerrado {fsym} — {reason}')
 
 # ── Gestión de posiciones ──────────────────────────────────────────────────────
 
@@ -769,35 +743,44 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
     partial = ps['partial_closed']
     if None in (entry, tp, trail):
         return False
+
+    # Tamaño real usado en la entrada
     ta = ps.get('trade_amount_used') or TRADE_AMOUNT
+
+    # PnL actual (bruto) en % y USD
     pnl_pct = (price - entry) / entry * 100
     pnl_u = ta * LEVERAGE * pnl_pct / 100
 
-    # FIX TP FIJO 1 USD
-    if should_close_profit('LONG', entry, price):
-        print(f"🎯 TP 1USD LONG {pair['fsym']} PnL: {round(pnl_u, 2)}")
-        send_msg(build_msg([
-            f'🎯 TP FIJO 1USD — LONG {pair["fsym"]}/USDT',
-            f' PnL ${round(pnl_u, 2)} | {now_str}'
-        ]))
-        if AUTO_TRADE and API_KEY:
-            close_position(pair, ps, price, 'TP fijo 1USD')
-        else:
-            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
-                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                       'partial_closed': False, 'trade_amount_used': None})
-        _now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-        save_state_now(_state_cache, _now, f'LONG cerrado {fsym} — {reason}')
-        return True
+    # ── ESCALERA DINÁMICA: asegurar LOCK_RATIO del máximo PnL ─────────────
+    max_pnl = ps.get('max_pnl_usd', 0.0)
+    if pnl_u > max_pnl:
+        max_pnl = pnl_u
+        ps['max_pnl_usd'] = max_pnl
 
-    new_trail = price - atr * TRAIL_MULT
-    if new_trail > trail:
-        ps['trailing_sl'] = new_trail
-        trail = new_trail
+    if max_pnl >= LOCK_START_USD:
+        # asegurar un porcentaje del mejor PnL alcanzado
+        lock_pnl = max_pnl * LOCK_RATIO
+        lock_pct = lock_pnl * 100 / (ta * LEVERAGE)  # % sobre el precio
+        sl_lock_price = entry * (1 + lock_pct / 100)  # LONG
+
+        # no bajar nunca el SL por debajo de lo ya asegurado
+        trail = max(trail, sl_lock_price)
+        ps['trailing_sl'] = trail
+
+        print(f"🔒 Escalera LONG {pair['fsym']}: max_pnl={max_pnl:.2f} lock={lock_pnl:.2f} SL_lock={sl_lock_price:.2f}")
+
+    # ── Trailing ATR clásico: solo subimos el SL si ATR lo permite ─────────
+    new_trail_atr = price - atr * TRAIL_MULT
+    if new_trail_atr > ps['trailing_sl']:
+        ps['trailing_sl'] = new_trail_atr
+        trail = new_trail_atr
+
+    # ── Parcial al 50 % en halfway del TP ATR ──────────────────────────────
     halfway = entry + (tp - entry) * 0.5
     if not partial and price >= halfway:
         ps['partial_closed'] = True
-        ps['trailing_sl'] = max(trail, entry)
+        # SL como mínimo en BE; respetamos escalera si estaba por encima
+        ps['trailing_sl'] = max(ps['trailing_sl'], entry)
         send_msg(build_msg([
             f'📍 50% TP LONG — {pair["fsym"]}/USDT',
             f' Precio: ${round(price, 2)} | SL → BE: ${round(entry, 2)}'
@@ -805,19 +788,25 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, '50% TP', partial=True)
         return True
-    if price <= trail:
+
+    # ── SL alcanzado (trail + escalera) ─────────────────────────────────────
+    if price <= ps['trailing_sl']:
         ps['last_sl_time'] = now_dt.isoformat()
         send_msg(build_msg([
             f'🛑 TRAILING SL LONG — {pair["fsym"]}/USDT',
-            f' Precio: ${round(price, 2)} | Trail: ${round(trail, 2)}'
+            f' Precio: ${round(price, 2)} | Trail: ${round(ps["trailing_sl"], 2)}'
         ]))
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, 'Trailing SL')
         else:
-            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
-                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                       'partial_closed': False, 'trade_amount_used': None})
+            ps.update({
+                'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                'partial_closed': False, 'trade_amount_used': None,
+                'max_pnl_usd': 0.0,
+            })
         return True
+
     return False
 
 def manage_short(pair, ps, price, atr, now_str, now_dt):
@@ -825,33 +814,49 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
     partial = ps['partial_closed']
     if None in (entry, tp, trail):
         return False
+
+    # Tamaño real usado en la entrada
     ta = ps.get('trade_amount_used') or TRADE_AMOUNT
+
+    # PnL actual (bruto) en % y USD — SHORT
     pnl_pct = (entry - price) / entry * 100
     pnl_u = ta * LEVERAGE * pnl_pct / 100
 
-    # FIX TP FIJO 1 USD
-    if should_close_profit('SHORT', entry, price):
-        print(f"🎯 TP 1USD SHORT {pair['fsym']} PnL: {round(pnl_u, 2)}")
-        send_msg(build_msg([
-            f'🎯 TP FIJO 1USD — SHORT {pair["fsym"]}/USDT',
-            f' PnL ${round(pnl_u, 2)} | {now_str}'
-        ]))
-        if AUTO_TRADE and API_KEY:
-            close_short(pair, ps, price, 'TP fijo 1USD')
-        else:
-            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
-                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                       'partial_closed': False, 'trade_amount_used': None})
-        return True
+    # ── ESCALERA DINÁMICA: asegurar LOCK_RATIO del máximo PnL ─────────────
+    max_pnl = ps.get('max_pnl_usd', 0.0)
+    if pnl_u > max_pnl:
+        max_pnl = pnl_u
+        ps['max_pnl_usd'] = max_pnl
 
-    new_trail = price + atr * TRAIL_MULT
-    if new_trail < trail:
-        ps['trailing_sl'] = new_trail
-        trail = new_trail
+    if max_pnl >= LOCK_START_USD:
+        # asegurar un porcentaje del mejor PnL alcanzado
+        lock_pnl = max_pnl * LOCK_RATIO
+        lock_pct = lock_pnl * 100 / (ta * LEVERAGE)  # % sobre el precio
+        # en SHORT, un PnL positivo viene de price < entry,
+        # así que el SL que asegura lock_pnl va por ENCIMA del precio actual
+        sl_lock_price = entry * (1 - lock_pct / 100)
+
+        # no subir nunca el SL por debajo de lo ya asegurado (recuerda: en SHORT el SL va por encima del mercado)
+        trail = min(trail, sl_lock_price)
+        ps['trailing_sl'] = trail
+
+        print(
+            f"🔒 Escalera SHORT {pair['fsym']}: "
+            f"max_pnl={max_pnl:.2f} lock={lock_pnl:.2f} SL_lock={sl_lock_price:.2f}"
+        )
+
+    # ── Trailing ATR clásico: solo bajamos el SL si ATR lo permite ─────────
+    new_trail_atr = price + atr * TRAIL_MULT
+    if new_trail_atr < ps['trailing_sl']:
+        ps['trailing_sl'] = new_trail_atr
+        trail = new_trail_atr
+
+    # ── Parcial al 50 % en halfway del TP ATR ──────────────────────────────
     halfway = entry - (entry - tp) * 0.5
     if not partial and price <= halfway:
         ps['partial_closed'] = True
-        ps['trailing_sl'] = min(trail, entry)
+        # SL como máximo en BE; respetamos escalera si estaba más abajo (más conservador)
+        ps['trailing_sl'] = min(ps['trailing_sl'], entry)
         send_msg(build_msg([
             f'📍 50% TP SHORT — {pair["fsym"]}/USDT',
             f' Precio: ${round(price, 2)} | SL → BE: ${round(entry, 2)}'
@@ -859,19 +864,25 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, '50% TP', partial=True)
         return True
-    if price >= trail:
+
+    # ── SL alcanzado (trail + escalera) ─────────────────────────────────────
+    if price >= ps['trailing_sl']:
         ps['last_sl_time'] = now_dt.isoformat()
         send_msg(build_msg([
             f'🛑 TRAILING SL SHORT — {pair["fsym"]}/USDT',
-            f' Precio: ${round(price, 2)} | Trail: ${round(trail, 2)}'
+            f' Precio: ${round(price, 2)} | Trail: ${round(ps["trailing_sl"], 2)}'
         ]))
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, 'Trailing SL')
         else:
-            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
-                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                       'partial_closed': False, 'trade_amount_used': None})
+            ps.update({
+                'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
+                'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
+                'partial_closed': False, 'trade_amount_used': None,
+                'max_pnl_usd': 0.0,
+            })
         return True
+
     return False
 
 # ── Cierres por BTC ────────────────────────────────────────────────────────────
@@ -888,7 +899,6 @@ def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now
         entry = ps.get('entry_price')
         if not entry:
             continue
-        # FIX: usar fetchcandles correctamente
         try:
             closes, highs, lows, vols = fetchcandles(pair['fsym'])
             if not closes:
@@ -933,8 +943,6 @@ def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now
                 ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
                            'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
                            'partial_closed': False, 'trade_amount_used': None})
-            _now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-            save_state_now(_state_cache, _now, f'LONG cerrado {fsym} — {reason}')
         elif pnl_pct <= 0:
             print(f' [REVERSIÓN] Manteniendo {pos} {pair["fsym"]} en pérdida ({round(pnl_pct, 2)}%)')
         else:
@@ -1043,12 +1051,21 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     lr, la = rsi14[-1] or 0.0, atr14[-1] or 0.0
     la_adx = adx14[-1] or 0.0
 
+    # ── FIX: Momentum con dirección ─────────────────────────────────────────────
     momentum_detected = False
+    momentum_long = False
+    momentum_short = False
     if USE_MOMENTUM and len(closes) >= 5:
-        price_change_pct = abs(closes[-1] - closes[-4]) / closes[-4]
+        price_change = (closes[-1] - closes[-4]) / closes[-4]   # con signo
+        price_change_pct = abs(price_change)
         if price_change_pct >= MOMENTUM_THRESHOLD and la_adx >= MOMENTUM_ADX_MIN:
             momentum_detected = True
-            print(f' ⚡ [MOMENTUM] {round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
+            if price_change > 0:
+                momentum_long = True
+                print(f' ⚡ [MOMENTUM ALCISTA] +{round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
+            else:
+                momentum_short = True
+                print(f' ⚡ [MOMENTUM BAJISTA] -{round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
 
     sl_long = price - la * 1.5
     tp_long = price + la * 2.5
@@ -1059,23 +1076,26 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     vcr = velas_desde_cruce(e21, e89)
 
     macd, sigmacd, hist = compute_macd(closes)
+    ok_long = False
+    ok_short = False
     if macd is not None and sigmacd is not None and hist is not None:
         macd_dir = 'ALCISTA' if macd > sigmacd else 'BAJISTA'
         strength = abs(macd - sigmacd)
-        ok_long = macd > sigmacd and strength >= MIN_MACD_STRENGTH
-        ok_short = macd < sigmacd and strength >= MIN_MACD_STRENGTH
+        ok_long = macd > sigmacd
+        ok_short = macd < sigmacd
         print(f' [{sym}] MACD {macd_dir} | macd={round(macd,2)} fuerza={round(strength,2)} long_ok={ok_long} short_ok={ok_short}')
+
     now_time = datetime.now(timezone.utc).strftime('%H:%M UTC')
     ps.update({
         'signal': sig, 'price': round(price, 2), 'rsi': round(lr, 1),
         'ema21': round(le21, 2), 'ema89': round(le89, 2),
         'atr': round(la, 2), 'adx': round(la_adx, 1), 'velas_cruce': vcr,
         'last_update': now_time,
-        })
-        # Abajo:
+    })
+
     pos = ps['position']
     if pos in ('LONG', 'SHORT') and ps.get('entry_price'):
-       print(f' [{sym}] 📈 PnL live: {ps.get("live_pnl_pct", 0):+.2f}% (${ps.get("live_pnl_usd", 0):+.2f})')
+        print(f' [{sym}] 📈 PnL live: {ps.get("live_pnl_pct", 0):+.2f}% (${ps.get("live_pnl_usd", 0):+.2f})')
     print(f' [{sym}] {sig} | ${round(price, 2)} | RSI:{round(lr, 1)} | ADX:{round(la_adx, 1)} | pos:{pos}')
 
     if pos == 'LONG':
@@ -1115,12 +1135,17 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
                        'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
                        'partial_closed': False, 'trade_amount_used': None})
 
+    # ── FIX: Re-evaluación si estamos FLAT con señal persistente ───────────────
     if sig == ps.get('last_signal') and ps.get('position') != 'FLAT':
         return ps
+    if sig == ps.get('last_signal') and ps.get('position') == 'FLAT':
+        print(f' [DEBUG] Señal persistente {sig}, re-evaluando entrada en {sym}...')
 
     ta_now = resolve_trade_amount(balance)
-    btc_ok_long = True if (not USE_BTC_FILTER or momentum_detected) else (btc_bull or fsym == 'BTC')
-    btc_ok_short = True if (not USE_BTC_FILTER or momentum_detected) else ((not btc_bull) or fsym == 'BTC')
+
+    # ── FIX: BTC filter con momentum DIRECCIONAL ────────────────────────────────
+    btc_ok_long  = True if (not USE_BTC_FILTER or momentum_long)  else (btc_bull or fsym == 'BTC')
+    btc_ok_short = True if (not USE_BTC_FILTER or momentum_short) else ((not btc_bull) or fsym == 'BTC')
 
     halfway_l = price + (tp_long - price) * 0.5
     halfway_s = price - (price - tp_short) * 0.5
@@ -1199,14 +1224,15 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
 
     send_msg(build_msg(parts))
 
-    late_long = sig == 'LONG_ACTIVE' and vcr <= MAX_CANDLES_LATE
+    late_long  = sig == 'LONG_ACTIVE'  and vcr <= MAX_CANDLES_LATE
     late_short = sig == 'SHORT_ACTIVE' and vcr <= MAX_CANDLES_LATE
 
+    # ── FIX: want_long/want_short con momentum DIRECCIONAL ─────────────────────
     if momentum_detected:
-        want_long = sig in ('BUY', 'LONG_ACTIVE', 'WAIT_RSI') and pos == 'FLAT' and closes[-1] > closes[-4]
-        want_short = sig in ('SELL', 'SHORT_ACTIVE', 'WAIT_RSI_SHORT') and pos == 'FLAT' and closes[-1] < closes[-4]
+        want_long  = sig in ('BUY', 'LONG_ACTIVE',  'WAIT_RSI')       and pos == 'FLAT' and momentum_long
+        want_short = sig in ('SELL', 'SHORT_ACTIVE', 'WAIT_RSI_SHORT') and pos == 'FLAT' and momentum_short
     else:
-        want_long = (sig == 'BUY' or sig == 'LONG_ACTIVE' or late_long) and pos == 'FLAT'
+        want_long  = (sig == 'BUY' or sig == 'LONG_ACTIVE'  or late_long)  and pos == 'FLAT'
         want_short = (sig == 'SELL' or sig == 'SHORT_ACTIVE' or late_short) and pos == 'FLAT'
 
     if AUTO_TRADE and API_KEY and (want_long or want_short):
@@ -1243,21 +1269,32 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             ps['last_signal'] = sig
             return ps
 
-        macd, sigmacd, hist = compute_macd(closes)
-        macd_long_dir = macd is not None and sigmacd is not None and macd > sigmacd
+        # 🚀 BYPASS ADX con momentum
+        if momentum_detected:
+            print(f"🚀 Momentum bypass ADX {la_adx} para {fsym}")
+        else:
+            if la_adx < ADX_MIN:
+                ps['last_signal'] = sig
+                return ps
+
+        macd_long_dir  = macd is not None and sigmacd is not None and macd > sigmacd
         macd_short_dir = macd is not None and sigmacd is not None and macd < sigmacd
 
-        if want_long and momentum_detected and macd_long_dir:
-            open_long(pair, ps, price, sl_long, tp_long, ta_now)
-            print(f'✅ ABIERTO LONG {fsym}: momentum + MACD alcista')
-        elif want_long:
-            print(f' [LONG] ⛔ Bloqueado {fsym}: sin momentum/MACD alcista')
+        # ── FIX: abrir LONG con momentum alcista O MACD alcista ─────────────────
+        if want_long:
+            if momentum_long or ok_long:
+                open_long(pair, ps, price, sl_long, tp_long, ta_now)
+                print(f'✅ ABIERTO LONG {fsym}: momentum_long={momentum_long} ok_long={ok_long}')
+            else:
+                print(f' [LONG] ⛔ Bloqueado {fsym}: sin momentum alcista ni MACD alcista')
 
-        if want_short and momentum_detected and macd_short_dir:
-            open_short(pair, ps, price, sl_short, tp_short, ta_now)
-            print(f'✅ ABIERTO SHORT {fsym}: momentum + MACD bajista')
-        elif want_short:
-            print(f' [SHORT] ⛔ Bloqueado {fsym}: sin momentum/MACD bajista')
+        # ── FIX: abrir SHORT con momentum bajista O MACD bajista ────────────────
+        if want_short:
+            if momentum_short or ok_short:
+                open_short(pair, ps, price, sl_short, tp_short, ta_now)
+                print(f'✅ ABIERTO SHORT {fsym}: momentum_short={momentum_short} ok_short={ok_short}')
+            else:
+                print(f' [SHORT] ⛔ Bloqueado {fsym}: sin momentum bajista ni MACD bajista')
 
     ps['last_signal'] = sig
     return ps
@@ -1272,7 +1309,7 @@ def run_bot_cycle():
     sizing = f'{TRADE_PCT * 100:.1f}%' if TRADE_PCT > 0 else f'${TRADE_AMOUNT}'
 
     print('=' * 55)
-    print(f' EMA Bot v10.2 + Momentum + Bugfix | {now_str}')
+    print(f' EMA Bot v10.3 + Momentum Direccional | {now_str}')
     print(f' Sizing: {sizing} | Lev: {LEVERAGE}x')
     print(f' RSI LONG>{RSI_MIN} SHORT<{RSI_MAX} | ADX>{ADX_MIN}')
     print(f' MaxPos: {MAX_OPEN_POS} | MaxAlts: {MAX_ALT_POS} | MaxTrades: {MAX_TRADES_DAY}')
@@ -1304,7 +1341,7 @@ def run_bot_cycle():
     for pair in PAIRS:
         sym = pair['symbol']
         fsym = pair['fsym']
-        print(f'\n-> {sym}')
+        print(f'\\n-> {sym}')
         ps = get_pair_state(state, sym)
         if ps.get('position') == 'FLAT' and open_now >= MAX_OPEN_POS:
             print(' [SALTADO MAX_OPEN_POSITIONS]')
@@ -1319,6 +1356,8 @@ def run_bot_cycle():
             send_msg(f'❌ Error {sym}: {exc}')
         time.sleep(2)
 
+    # ── FIX: btc_signal desde el estado actualizado de BTC ─────────────────────
+    btc_signal = state.get('BTCUSDT', {}).get('signal')
     if btc_signal:
         check_btc_long_signal_exits(state, btc_signal, now_str, now_dt)
         check_btc_short_signal_exits(state, btc_signal, now_str, now_dt)
@@ -1329,19 +1368,18 @@ def run_bot_cycle():
     if cycle_count >= REPORT_EVERY_N_CYCLES:
         send_session_report(state, now_str, balance, today)
         cycle_count = 0
-        print(f'\n📊 Reporte enviado (ciclo {REPORT_EVERY_N_CYCLES})')
+        print(f'\\n📊 Reporte enviado (ciclo {REPORT_EVERY_N_CYCLES})')
     else:
-        print(f'\n📊 Próximo reporte en {REPORT_EVERY_N_CYCLES - cycle_count} ciclos (~{(REPORT_EVERY_N_CYCLES - cycle_count) * 3} min)')
+        print(f'\\n📊 Próximo reporte en {REPORT_EVERY_N_CYCLES - cycle_count} ciclos (~{(REPORT_EVERY_N_CYCLES - cycle_count) * 3} min)')
 
-    print(f'\n✓ Completado — {now_str}')
+    print(f'\\n✓ Completado — {now_str}')
     has_positions = count_open_positions(state) > 0
     return has_positions
-
 
 def main():
     global running
     print('=' * 70)
-    print('🤖 EMA Bot v10.2 - Iniciado')
+    print('🤖 EMA Bot v10.3 - Iniciado')
     print('=' * 70)
     print(f'Check con posiciones: {CHECK_INTERVAL_WITH_POSITIONS}s (3 min)')
     print(f'Check sin posiciones: {CHECK_INTERVAL_NO_POSITIONS}s (15 min)')
@@ -1353,28 +1391,27 @@ def main():
             if has_positions:
                 interval = CHECK_INTERVAL_WITH_POSITIONS
                 next_check = datetime.now(timezone.utc) + timedelta(seconds=interval)
-                print(f'\n⏰ Posiciones activas. Próximo check en 3 min ({next_check.strftime("%H:%M UTC")})')
+                print(f'\\n⏰ Posiciones activas. Próximo check en 3 min ({next_check.strftime("%H:%M UTC")})')
             else:
                 interval = CHECK_INTERVAL_NO_POSITIONS
                 next_check = datetime.now(timezone.utc) + timedelta(seconds=interval)
-                print(f'\n⏰ Sin posiciones. Próximo check en 15 min ({next_check.strftime("%H:%M UTC")})')
+                print(f'\\n⏰ Sin posiciones. Próximo check en 15 min ({next_check.strftime("%H:%M UTC")})')
             elapsed = 0
             while elapsed < interval and running:
                 sleep_time = min(10, interval - elapsed)
                 time.sleep(sleep_time)
                 elapsed += sleep_time
         except KeyboardInterrupt:
-            print('\n[KEYBOARD] Deteniendo bot...')
+            print('\\n[KEYBOARD] Deteniendo bot...')
             running = False
             break
         except Exception as e:
-            print(f'\n[ERROR EN LOOP] {e}')
+            print(f'\\n[ERROR EN LOOP] {e}')
             import traceback
             traceback.print_exc()
             time.sleep(60)
 
-    print('\n🛑 Bot detenido correctamente')
-
+    print('\\n🛑 Bot detenido correctamente')
 
 if __name__ == '__main__':
     main()
