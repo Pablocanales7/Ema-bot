@@ -40,9 +40,9 @@ AUTO_TRADE = os.environ.get('AUTO_TRADE', 'false').lower() == 'true'
 TRADE_AMOUNT = float(os.environ.get('TRADE_AMOUNT', '10'))
 TRADE_PCT = float(os.environ.get('TRADE_PCT', '0'))
 LEVERAGE = int(os.environ.get('LEVERAGE', '10'))
-MAX_TRADES_DAY = int(os.environ.get('MAX_DAILY_TRADES', '12'))
-MAX_OPEN_POS = int(os.environ.get('MAX_OPEN_POSITIONS', '2'))
-MAX_ALT_POS = int(os.environ.get('MAX_ALT_POSITIONS', '1'))
+MAX_TRADES_DAY = int(os.environ.get('MAX_DAILY_TRADES', '20'))
+MAX_OPEN_POS = int(os.environ.get('MAX_OPEN_POSITIONS', '3'))
+MAX_ALT_POS = int(os.environ.get('MAX_ALT_POSITIONS', '2'))
 RSI_MIN = float(os.environ.get('RSI_ENTRY_MIN', '48'))
 RSI_MAX = float(os.environ.get('RSI_ENTRY_MAX', '52'))
 TRAIL_MULT = float(os.environ.get('TRAIL_ATR_MULT', '1.5'))
@@ -575,7 +575,7 @@ def escape_html(text):
 
 def build_msg(parts):
     safe_parts = [escape_html(p) for p in parts if p is not None]
-    return 'n'.join(safe_parts)
+    return '\n'.join(safe_parts)
 
 def send_msg(text):
     try:
@@ -1218,9 +1218,6 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             f'⏰ {now_str}'
         ]
 
-    if parts is None:
-        ps['last_signal'] = sig
-        return ps
 
     send_msg(build_msg(parts))
 
