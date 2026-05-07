@@ -17,7 +17,7 @@ FEE_ROUNDTRIP = 0.0010
 FEE_BUFFER_PCT = 0.10
 
 cycle_count = 0
-REPORT_EVERY_N_CYCLES = 2
+REPORT_EVERY_N_CYCLES = 10
 
 running = True
 
@@ -30,7 +30,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 CHECK_INTERVAL_WITH_POSITIONS = 180
-CHECK_INTERVAL_NO_POSITIONS = 900
+CHECK_INTERVAL_NO_POSITIONS = 600
 
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT = os.environ['TELEGRAM_CHAT_ID']
@@ -678,7 +678,7 @@ def close_position(pair, ps, price, reason, partial=False):
                    'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
                    'partial_closed': False, 'trade_amount_used': None,'max_pnl_usd': 0.0,})
     _now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-    save_state_now(_state_cache, _now, f'LONG cerrado {fsym} — {reason}')
+    save_state_now(_state_cache, _now, f'LONG cerrado {pair["fsym"]}')
 
 def open_short(pair, ps, price, sl, tp, ta):
     sym, fsym, dec = pair['symbol'], pair['fsym'], pair['dec']
@@ -751,6 +751,18 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
     pnl_pct = (price - entry) / entry * 100
     pnl_u = ta * LEVERAGE * pnl_pct / 100
 
+    # 🛡️ PROTECCIÓN MOMENTUM: Ignora cierres EMA contraria EN POSICIÓN ABIERTA
+    if USE_MOMENTUM and la_adx >= MOMENTUM_ADX_MIN:
+        closes, _, _, _ = fetchcandles(pair['fsym'])
+        if len(closes) >= 5:
+            price_change = closes[-1] - closes[-4]
+            price_change_pct = abs(price_change / closes[-4])
+            if price_change_pct >= MOMENTUM_THRESHOLD:
+                if 'SELL' in ps.get('signal', '') or 'WAIT_RSI_SHORT' in ps.get('signal', ''):
+                    printf("🛡️ MOMENTUM: Protegiendo LONG %s (ADX:%.1f > %.1f)", pair['fsym'], la_adx, MOMENTUM_ADX_MIN)
+                    return False  # NO cierra por EMA
+                # Continúa con trailing/TP/SL normal
+
     # ── ESCALERA DINÁMICA: asegurar LOCK_RATIO del máximo PnL ─────────────
     max_pnl = ps.get('max_pnl_usd', 0.0)
     if pnl_u > max_pnl:
@@ -821,6 +833,17 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
     # PnL actual (bruto) en % y USD — SHORT
     pnl_pct = (entry - price) / entry * 100
     pnl_u = ta * LEVERAGE * pnl_pct / 100
+
+    # 🛡️ PROTECCIÓN MOMENTUM (igual para SHORT)
+    if USE_MOMENTUM and la_adx >= MOMENTUM_ADX_MIN:
+        closes, _, _, _ = fetchcandles(pair['fsym'])
+        if len(closes) >= 5:
+            price_change = closes[-1] - closes[-4]
+            price_change_pct = abs(price_change / closes[-4])
+            if price_change_pct >= MOMENTUM_THRESHOLD:
+                if 'BUY' in ps.get('signal', '') or 'WAIT_RSI' in ps.get('signal', ''):
+                    printf("🛡️ MOMENTUM: Protegiendo SHORT %s (ADX:%.1f > %.1f)", pair['fsym'], la_adx, MOMENTUM_ADX_MIN)
+                    return False  # NO cierra por EMA
 
     # ── ESCALERA DINÁMICA: asegurar LOCK_RATIO del máximo PnL ─────────────
     max_pnl = ps.get('max_pnl_usd', 0.0)
@@ -1226,8 +1249,8 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
 
     # ── FIX: want_long/want_short con momentum DIRECCIONAL ─────────────────────
     if momentum_detected:
-        want_long  = sig in ('BUY', 'LONG_ACTIVE',  'WAIT_RSI')       and pos == 'FLAT' and momentum_long
-        want_short = sig in ('SELL', 'SHORT_ACTIVE', 'WAIT_RSI_SHORT') and pos == 'FLAT' and momentum_short
+        want_long  = sig in ('BUY', 'LONG_ACTIVE',  'WAIT_RSI', 'WAIT_RSI_SHORT')       and pos == 'FLAT' and momentum_long
+        want_short = sig in ('SELL', 'SHORT_ACTIVE', 'WAIT_RSI_SHORT',  'WAIT_RSI') and pos == 'FLAT' and momentum_short
     else:
         want_long  = (sig == 'BUY' or sig == 'LONG_ACTIVE'  or late_long)  and pos == 'FLAT'
         want_short = (sig == 'SELL' or sig == 'SHORT_ACTIVE' or late_short) and pos == 'FLAT'
