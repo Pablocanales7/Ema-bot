@@ -64,6 +64,7 @@ MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.6
 MIN_PROFIT_MACD_EXIT = 0.3
 LOCK_START_USD = float(os.environ.get('LOCK_START_USD', '0.5'))   # desde qué PnL empezar a asegurar
 LOCK_RATIO = float(os.environ.get('LOCK_RATIO', '0.8'))          # % del máximo PnL a asegurar (0.8 = 80%)
+PROFIT_TARGET_USD = float(os.environ.get('PROFIT_TARGET_USD', '10'))
 
 PAIRS = [
     {'symbol': 'BTCUSDT', 'fsym': 'BTC', 'dec': 3},
@@ -394,7 +395,8 @@ def calc_adx(highs, lows, closes, period=14):
         up, dn = highs[i] - highs[i-1], lows[i-1] - lows[i]
         pdm.append(up if up > dn and up > 0 else 0.0)
         ndm.append(dn if dn >= up and dn > 0 else 0.0)
-
+    if len(tr) < period * 2:
+        return [None] * n
     def wilder(arr):
         res = [sum(arr[:period]) / period]
         for v in arr[period:]:
@@ -752,14 +754,15 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
     pnl_u = ta * LEVERAGE * pnl_pct / 100
 
     # 🛡️ PROTECCIÓN MOMENTUM: Ignora cierres EMA contraria EN POSICIÓN ABIERTA
-    if USE_MOMENTUM and la_adx >= MOMENTUM_ADX_MIN:
+    adx_now = ps.get('adx', 0.0) or 0.0
+    if USE_MOMENTUM and adx_now >= MOMENTUM_ADX_MIN:
         closes, _, _, _ = fetchcandles(pair['fsym'])
         if len(closes) >= 5:
             price_change = closes[-1] - closes[-4]
             price_change_pct = abs(price_change / closes[-4])
             if price_change_pct >= MOMENTUM_THRESHOLD:
                 if 'SELL' in ps.get('signal', '') or 'WAIT_RSI_SHORT' in ps.get('signal', ''):
-                    printf("🛡️ MOMENTUM: Protegiendo LONG %s (ADX:%.1f > %.1f)", pair['fsym'], la_adx, MOMENTUM_ADX_MIN)
+                    print(f"🛡️ MOMENTUM: Protegiendo LONG {pair['fsym']} (ADX:{adx_now} > {MOMENTUM_ADX_MIN})")
                     return False  # NO cierra por EMA
                 # Continúa con trailing/TP/SL normal
 
@@ -835,7 +838,8 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
     pnl_u = ta * LEVERAGE * pnl_pct / 100
 
     # 🛡️ PROTECCIÓN MOMENTUM (igual para SHORT)
-    if USE_MOMENTUM and la_adx >= MOMENTUM_ADX_MIN:
+    adx_now = ps.get('adx', 0.0) or 0.0
+    if USE_MOMENTUM and adx_now >= MOMENTUM_ADX_MIN:
         closes, _, _, _ = fetchcandles(pair['fsym'])
         if len(closes) >= 5:
             price_change = closes[-1] - closes[-4]
@@ -1055,6 +1059,7 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
 
 def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     sym, fsym = pair['symbol'], pair['fsym']
+
     if ps.get('trades_date') != today:
         ps['trades_today'] = 0
         ps['trades_date'] = today
@@ -1070,25 +1075,19 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     rsi14 = calc_rsi(closes, 14)
     atr14 = calc_atr(highs, lows, closes, 14)
     adx14 = calc_adx(highs, lows, closes, 14)
-    le21, le89 = e21[-1] or 0.0, e89[-1] or 0.0
-    lr, la = rsi14[-1] or 0.0, atr14[-1] or 0.0
-    la_adx = adx14[-1] or 0.0
 
-    # ── FIX: Momentum con dirección ─────────────────────────────────────────────
+    le21 = e21[-1] or 0.0
+    le89 = e89[-1] or 0.0
+    lr = rsi14[-1] or 0.0
+    la = atr14[-1] or 0.0
+    la_adx = adx14[-1] if adx14 and adx14[-1] is not None else 0.0
+
     momentum_detected = False
-    momentum_long = False
-    momentum_short = False
     if USE_MOMENTUM and len(closes) >= 5:
-        price_change = (closes[-1] - closes[-4]) / closes[-4]   # con signo
-        price_change_pct = abs(price_change)
+        price_change_pct = abs(closes[-1] - closes[-4]) / closes[-4]
         if price_change_pct >= MOMENTUM_THRESHOLD and la_adx >= MOMENTUM_ADX_MIN:
             momentum_detected = True
-            if price_change > 0:
-                momentum_long = True
-                print(f' ⚡ [MOMENTUM ALCISTA] +{round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
-            else:
-                momentum_short = True
-                print(f' ⚡ [MOMENTUM BAJISTA] -{round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
+            print(f' ⚡ [MOMENTUM] {round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
 
     sl_long = price - la * 1.5
     tp_long = price + la * 2.5
@@ -1098,36 +1097,44 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     sig = get_signal(e21, e89, rsi14, RSI_MIN, RSI_MAX)
     vcr = velas_desde_cruce(e21, e89)
 
-    macd, sigmacd, hist = compute_macd(closes)
+    macd = sigmacd = hist = None
     ok_long = False
     ok_short = False
+    macd, sigmacd, hist = compute_macd(closes)
     if macd is not None and sigmacd is not None and hist is not None:
         macd_dir = 'ALCISTA' if macd > sigmacd else 'BAJISTA'
         strength = abs(macd - sigmacd)
-        ok_long = macd > sigmacd
-        ok_short = macd < sigmacd
-        print(f' [{sym}] MACD {macd_dir} | macd={round(macd,2)} fuerza={round(strength,2)} long_ok={ok_long} short_ok={ok_short}')
+        ok_long = macd > sigmacd and strength >= MIN_MACD_STRENGTH
+        ok_short = macd < sigmacd and strength >= MIN_MACD_STRENGTH
+        print(f' [{sym}] MACD {macd_dir} | macd={round(macd, 2)} fuerza={round(strength, 2)} long_ok={ok_long} short_ok={ok_short}')
 
     now_time = datetime.now(timezone.utc).strftime('%H:%M UTC')
     ps.update({
-        'signal': sig, 'price': round(price, 2), 'rsi': round(lr, 1),
-        'ema21': round(le21, 2), 'ema89': round(le89, 2),
-        'atr': round(la, 2), 'adx': round(la_adx, 1), 'velas_cruce': vcr,
+        'signal': sig,
+        'price': round(price, 2),
+        'rsi': round(lr, 1),
+        'ema21': round(le21, 2),
+        'ema89': round(le89, 2),
+        'atr': round(la, 2),
+        'adx': round(la_adx, 1),
+        'velas_cruce': vcr,
         'last_update': now_time,
     })
 
-    pos = ps['position']
+    pos = ps.get('position', 'FLAT')
+
     if pos in ('LONG', 'SHORT') and ps.get('entry_price'):
         print(f' [{sym}] 📈 PnL live: {ps.get("live_pnl_pct", 0):+.2f}% (${ps.get("live_pnl_usd", 0):+.2f})')
+
     print(f' [{sym}] {sig} | ${round(price, 2)} | RSI:{round(lr, 1)} | ADX:{round(la_adx, 1)} | pos:{pos}')
 
     if pos == 'LONG':
         manage_open(pair, ps, price, la, now_str, now_dt)
-    if pos == 'SHORT':
+    elif pos == 'SHORT':
         manage_short(pair, ps, price, la, now_str, now_dt)
 
-    if sig in ('SELL', 'WAIT_RSI_SHORT') and ps['position'] == 'LONG':
-        ep = ps['entry_price'] or price
+    if sig in ('SELL', 'WAIT_RSI_SHORT') and ps.get('position') == 'LONG':
+        ep = ps.get('entry_price') or price
         ta_u = ps.get('trade_amount_used') or TRADE_AMOUNT
         pnl_u = ta_u * LEVERAGE * (price - ep) / ep
         send_msg(build_msg([
@@ -1138,12 +1145,19 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, 'Cruce bajista')
         else:
-            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
-                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                       'partial_closed': False, 'trade_amount_used': None})
+            ps.update({
+                'position': 'FLAT',
+                'entry_price': None,
+                'entry_qty': None,
+                'initial_sl': None,
+                'tp_target': None,
+                'trailing_sl': None,
+                'partial_closed': False,
+                'trade_amount_used': None
+            })
 
-    if sig in ('BUY', 'WAIT_RSI') and ps['position'] == 'SHORT':
-        ep = ps['entry_price'] or price
+    if sig in ('BUY', 'WAIT_RSI') and ps.get('position') == 'SHORT':
+        ep = ps.get('entry_price') or price
         ta_u = ps.get('trade_amount_used') or TRADE_AMOUNT
         pnl_u = ta_u * LEVERAGE * (ep - price) / ep
         send_msg(build_msg([
@@ -1154,21 +1168,24 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, 'Cruce alcista')
         else:
-            ps.update({'position': 'FLAT', 'entry_price': None, 'entry_qty': None,
-                       'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
-                       'partial_closed': False, 'trade_amount_used': None})
+            ps.update({
+                'position': 'FLAT',
+                'entry_price': None,
+                'entry_qty': None,
+                'initial_sl': None,
+                'tp_target': None,
+                'trailing_sl': None,
+                'partial_closed': False,
+                'trade_amount_used': None
+            })
 
-    # ── FIX: Re-evaluación si estamos FLAT con señal persistente ───────────────
-    if sig == ps.get('last_signal') and ps.get('position') != 'FLAT':
+    pos = ps.get('position', 'FLAT')
+    if sig == ps.get('last_signal') and pos != 'FLAT':
         return ps
-    if sig == ps.get('last_signal') and ps.get('position') == 'FLAT':
-        print(f' [DEBUG] Señal persistente {sig}, re-evaluando entrada en {sym}...')
 
     ta_now = resolve_trade_amount(balance)
-
-    # ── FIX: BTC filter con momentum DIRECCIONAL ────────────────────────────────
-    btc_ok_long  = True if (not USE_BTC_FILTER or momentum_long)  else (btc_bull or fsym == 'BTC')
-    btc_ok_short = True if (not USE_BTC_FILTER or momentum_short) else ((not btc_bull) or fsym == 'BTC')
+    btc_ok_long = True if (not USE_BTC_FILTER or momentum_detected) else (btc_bull or fsym == 'BTC')
+    btc_ok_short = True if (not USE_BTC_FILTER or momentum_detected) else ((not btc_bull) or fsym == 'BTC')
 
     halfway_l = price + (tp_long - price) * 0.5
     halfway_s = price - (price - tp_short) * 0.5
@@ -1182,6 +1199,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     pnl_tp_s = round(ta_now * LEVERAGE * abs(tp_pct_s) / 100, 2)
 
     parts = None
+
     if sig == 'BUY':
         dec_txt = '✅ ABRIR LONG' if btc_ok_long else '⛔ NO OPERAR — BTC filtrado'
         parts = [
@@ -1209,7 +1227,8 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     elif sig == 'WAIT_RSI':
         falta = round(RSI_MIN - lr, 1)
         parts = [
-            f'🟡 CRUCE ALCISTA — {fsym}/USDT 4H', '⏳ Esperar RSI',
+            f'🟡 CRUCE ALCISTA — {fsym}/USDT 4H',
+            '⏳ Esperar RSI',
             f'📐 RSI: {round(lr, 1)} (faltan +{falta} para >{RSI_MIN})',
             f'🕯 Velas desde cruce: {vcr} | ADX: {round(la_adx, 1)}',
             f'🎯 TP ref: ${round(tp_long, 2)} | 🛑 SL ref: ${round(sl_long, 2)}',
@@ -1218,7 +1237,8 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     elif sig == 'WAIT_RSI_SHORT':
         falta = round(lr - RSI_MAX, 1)
         parts = [
-            f'🟠 CRUCE BAJISTA — {fsym}/USDT 4H', '⏳ Esperar RSI',
+            f'🟠 CRUCE BAJISTA — {fsym}/USDT 4H',
+            '⏳ Esperar RSI',
             f'📐 RSI: {round(lr, 1)} (sobran {falta} para <{RSI_MAX})',
             f'🕯 Velas desde cruce: {vcr} | ADX: {round(la_adx, 1)}',
             f'🎯 TP ref: ${round(tp_short, 2)} | 🛑 SL ref: ${round(sl_short, 2)}',
@@ -1227,7 +1247,8 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     elif sig == 'LONG_ACTIVE':
         dec_txt = f'⚡ Entrada tardía válida ({vcr} velas)' if vcr <= MAX_CANDLES_LATE else f'⏸ Cruce antiguo ({vcr} velas)'
         parts = [
-            f'🔵 LARGO ACTIVO — {fsym}/USDT 4H', dec_txt,
+            f'🔵 LARGO ACTIVO — {fsym}/USDT 4H',
+            dec_txt,
             f'📊 ${round(price, 2)} | RSI: {round(lr, 1)} | ADX: {round(la_adx, 1)}',
             f'🎯 TP ref: ${round(tp_long, 2)} | 🛑 SL ref: ${round(sl_long, 2)}',
             f'⏰ {now_str}'
@@ -1235,33 +1256,40 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     elif sig == 'SHORT_ACTIVE':
         dec_txt = f'⚡ Entrada tardía válida ({vcr} velas)' if vcr <= MAX_CANDLES_LATE else f'⏸ Cruce antiguo ({vcr} velas)'
         parts = [
-            f'🟠 CORTO ACTIVO — {fsym}/USDT 4H', dec_txt,
+            f'🟠 CORTO ACTIVO — {fsym}/USDT 4H',
+            dec_txt,
             f'📊 ${round(price, 2)} | RSI: {round(lr, 1)} | ADX: {round(la_adx, 1)}',
             f'🎯 TP ref: ${round(tp_short, 2)} | 🛑 SL ref: ${round(sl_short, 2)}',
             f'⏰ {now_str}'
         ]
 
+    if parts is None:
+        ps['last_signal'] = sig
+        return ps
 
     send_msg(build_msg(parts))
 
-    late_long  = sig == 'LONG_ACTIVE'  and vcr <= MAX_CANDLES_LATE
+    late_long = sig == 'LONG_ACTIVE' and vcr <= MAX_CANDLES_LATE
     late_short = sig == 'SHORT_ACTIVE' and vcr <= MAX_CANDLES_LATE
 
-    # ── FIX: want_long/want_short con momentum DIRECCIONAL ─────────────────────
+    pos = ps.get('position', 'FLAT')
     if momentum_detected:
-        want_long  = sig in ('BUY', 'LONG_ACTIVE',  'WAIT_RSI', 'WAIT_RSI_SHORT')       and pos == 'FLAT' and momentum_long
-        want_short = sig in ('SELL', 'SHORT_ACTIVE', 'WAIT_RSI_SHORT',  'WAIT_RSI') and pos == 'FLAT' and momentum_short
+        want_long = sig in ('BUY', 'LONG_ACTIVE', 'WAIT_RSI') and pos == 'FLAT' and closes[-1] > closes[-4]
+        want_short = sig in ('SELL', 'SHORT_ACTIVE', 'WAIT_RSI_SHORT') and pos == 'FLAT' and closes[-1] < closes[-4]
     else:
-        want_long  = (sig == 'BUY' or sig == 'LONG_ACTIVE'  or late_long)  and pos == 'FLAT'
+        want_long = (sig == 'BUY' or sig == 'LONG_ACTIVE' or late_long) and pos == 'FLAT'
         want_short = (sig == 'SELL' or sig == 'SHORT_ACTIVE' or late_short) and pos == 'FLAT'
 
     if AUTO_TRADE and API_KEY and (want_long or want_short):
-        if sl_cooldown_active(ps, now_dt)[0]:
+        cooldown_active, _ = sl_cooldown_active(ps, now_dt)
+        if cooldown_active:
             ps['last_signal'] = sig
             return ps
+
         if la_adx < ADX_MIN:
             ps['last_signal'] = sig
             return ps
+
         if USE_MTF:
             daily_bull = pair_daily_is_bullish(fsym)
             if want_long and not daily_bull:
@@ -1270,11 +1298,13 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             if want_short and daily_bull:
                 ps['last_signal'] = sig
                 return ps
+
         if USE_VOLUME_FILTER:
             vol_ok, _ = volume_confirmed(vols)
             if not vol_ok:
                 ps['last_signal'] = sig
                 return ps
+
         if USE_BTC_FILTER and not momentum_detected:
             if want_long and not btc_ok_long:
                 ps['last_signal'] = sig
@@ -1282,39 +1312,28 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             if want_short and not btc_ok_short:
                 ps['last_signal'] = sig
                 return ps
+
+        if count_open_positions(state) >= MAX_OPEN_POS:
+            ps['last_signal'] = sig
+            return ps
+
         if fsym != 'BTC' and count_alt_positions(state) >= MAX_ALT_POS:
             ps['last_signal'] = sig
             return ps
-        if ps['trades_today'] >= MAX_TRADES_DAY:
+
+        if ps.get('trades_today', 0) >= MAX_DAILY_TRADES:
             ps['last_signal'] = sig
             return ps
 
-        # 🚀 BYPASS ADX con momentum
-        if momentum_detected:
-            print(f"🚀 Momentum bypass ADX {la_adx} para {fsym}")
-        else:
-            if la_adx < ADX_MIN:
-                ps['last_signal'] = sig
-                return ps
+        exceeded, _ = daily_loss_exceeded(state, today)
+        if exceeded:
+            ps['last_signal'] = sig
+            return ps
 
-        macd_long_dir  = macd is not None and sigmacd is not None and macd > sigmacd
-        macd_short_dir = macd is not None and sigmacd is not None and macd < sigmacd
-
-        # ── FIX: abrir LONG con momentum alcista O MACD alcista ─────────────────
         if want_long:
-            if momentum_long or ok_long:
-                open_long(pair, ps, price, sl_long, tp_long, ta_now)
-                print(f'✅ ABIERTO LONG {fsym}: momentum_long={momentum_long} ok_long={ok_long}')
-            else:
-                print(f' [LONG] ⛔ Bloqueado {fsym}: sin momentum alcista ni MACD alcista')
-
-        # ── FIX: abrir SHORT con momentum bajista O MACD bajista ────────────────
-        if want_short:
-            if momentum_short or ok_short:
-                open_short(pair, ps, price, sl_short, tp_short, ta_now)
-                print(f'✅ ABIERTO SHORT {fsym}: momentum_short={momentum_short} ok_short={ok_short}')
-            else:
-                print(f' [SHORT] ⛔ Bloqueado {fsym}: sin momentum bajista ni MACD bajista')
+            open_long(pair, ps, price, sl_long, tp_long, ta_now)
+        elif want_short:
+            open_short(pair, ps, price, sl_short, tp_short, ta_now)
 
     ps['last_signal'] = sig
     return ps
