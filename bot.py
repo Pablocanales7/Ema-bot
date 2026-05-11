@@ -46,7 +46,7 @@ MAX_OPEN_POS = int(os.environ.get('MAX_OPEN_POSITIONS', '3'))
 MAX_ALT_POS = int(os.environ.get('MAX_ALT_POSITIONS', '2'))
 RSI_MIN = float(os.environ.get('RSI_ENTRY_MIN', '48'))
 RSI_MAX = float(os.environ.get('RSI_ENTRY_MAX', '52'))
-TRAIL_MULT = float(os.environ.get('TRAIL_ATR_MULT', '1.5'))
+TRAIL_MULT = float(os.environ.get('TRAIL_ATR_MULT', '0.55'))
 ADX_MIN = float(os.environ.get('ADX_MIN', '18'))
 DAILY_LOSS_LIMIT = float(os.environ.get('DAILY_LOSS_LIMIT', '-30'))
 SL_COOLDOWN_HOURS = int(os.environ.get('SL_COOLDOWN_HOURS', '12'))
@@ -71,7 +71,9 @@ PAIRS = [
     {'symbol': 'BTCUSDT', 'fsym': 'BTC', 'dec': 3},
     {'symbol': 'ETHUSDT', 'fsym': 'ETH', 'dec': 3},
     {'symbol': 'SOLUSDT', 'fsym': 'SOL', 'dec': 1},
-    {'symbol': 'BNBUSDT', 'fsym': 'BNB', 'dec': 2},
+    {"symbol": "XRPUSDT", "fsym": "XRP", "dec": 1},
+    {"symbol": "DOGEUSDT", "fsym": "DOGE", "dec": 0},
+    {"symbol": "ADAUSDT", "fsym": "ADA", "dec": 0},
 ]
 
 STATE_FILE = 'state.json'
@@ -1070,9 +1072,9 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             momentum_detected = True
             print(f' ⚡ [MOMENTUM] {round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
 
-    sl_long = price - la * 1.5
+    sl_long = price - la * 0.55
     tp_long = price + la * 2.5
-    sl_short = price + la * 1.5
+    sl_short = price + la * 0.55
     tp_short = price - la * 2.5
 
     sig = get_signal(e21, e89, rsi14, RSI_MIN, RSI_MAX)
