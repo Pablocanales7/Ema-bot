@@ -29,9 +29,9 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-CHECK_INTERVAL_WITH_POSITIONS = 180
+CHECK_INTERVAL_WITH_POSITIONS = 60
 CHECK_INTERVAL_NO_POSITIONS = 600
-CHECK_INTERVAL_LOCKED = int(os.environ.get('CHECK_INTERVAL_LOCKED', '30'))
+CHECK_INTERVAL_LOCKED = int(os.environ.get('CHECK_INTERVAL_LOCKED', '15'))
 
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT = os.environ['TELEGRAM_CHAT_ID']
@@ -42,14 +42,14 @@ TRADE_AMOUNT = float(os.environ.get('TRADE_AMOUNT', '10'))
 TRADE_PCT = float(os.environ.get('TRADE_PCT', '0'))
 LEVERAGE = int(os.environ.get('LEVERAGE', '10'))
 MAX_TRADES_DAY = int(os.environ.get('MAX_DAILY_TRADES', '20'))
-MAX_OPEN_POS = int(os.environ.get('MAX_OPEN_POSITIONS', '3'))
-MAX_ALT_POS = int(os.environ.get('MAX_ALT_POSITIONS', '2'))
-RSI_MIN = float(os.environ.get('RSI_ENTRY_MIN', '48'))
-RSI_MAX = float(os.environ.get('RSI_ENTRY_MAX', '52'))
-TRAIL_MULT = float(os.environ.get('TRAIL_ATR_MULT', '0.55'))
+MAX_OPEN_POS = int(os.environ.get('MAX_OPEN_POSITIONS', '4'))
+MAX_ALT_POS = int(os.environ.get('MAX_ALT_POSITIONS', '3'))
+RSI_MIN = float(os.environ.get('RSI_ENTRY_MIN', '52'))
+RSI_MAX = float(os.environ.get('RSI_ENTRY_MAX', '48'))
+TRAIL_MULT = float(os.environ.get('TRAIL_ATR_MULT', '0.6'))
 ADX_MIN = float(os.environ.get('ADX_MIN', '18'))
-DAILY_LOSS_LIMIT = float(os.environ.get('DAILY_LOSS_LIMIT', '-30'))
-SL_COOLDOWN_HOURS = int(os.environ.get('SL_COOLDOWN_HOURS', '12'))
+DAILY_LOSS_LIMIT = float(os.environ.get('DAILY_LOSS_LIMIT', '-15'))
+SL_COOLDOWN_HOURS = int(os.environ.get('SL_COOLDOWN_HOURS', '1'))
 VOL_MULT = float(os.environ.get('VOL_MULT', '1.2'))
 USE_MTF = os.environ.get('USE_MTF', 'false').lower() == 'true'
 USE_VOLUME_FILTER = os.environ.get('USE_VOLUME_FILTER', 'false').lower() == 'true'
@@ -57,23 +57,23 @@ USE_BTC_FILTER = os.environ.get('USE_BTC_FILTER', 'false').lower() == 'true'
 RECV_WINDOW = int(os.environ.get('RECV_WINDOW', '10000'))
 MAX_CANDLES_LATE = int(os.environ.get('MAX_CANDLES_LATE', '2'))
 USE_MOMENTUM = os.environ.get('USE_MOMENTUM_DETECTION', 'true').lower() == 'true'
-MOMENTUM_THRESHOLD = float(os.environ.get('MOMENTUM_THRESHOLD', '0.008'))
-MOMENTUM_ADX_MIN = float(os.environ.get('MOMENTUM_ADX_MIN', '16'))
+MOMENTUM_THRESHOLD = float(os.environ.get('MOMENTUM_THRESHOLD', '0.009'))
+MOMENTUM_ADX_MIN = float(os.environ.get('MOMENTUM_ADX_MIN', '16.5'))
 TIMEFRAME_HOURS = int(os.environ.get('TIMEFRAME_HOURS', '1'))
-MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '20'))
-MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.6'))
+MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '15'))
+MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.35'))
 MIN_PROFIT_MACD_EXIT = 0.3
-LOCK_START_USD = float(os.environ.get('LOCK_START_USD', '0.5'))   # desde qué PnL empezar a asegurar
-LOCK_RATIO = float(os.environ.get('LOCK_RATIO', '0.8'))          # % del máximo PnL a asegurar (0.8 = 80%)
+LOCK_START_USD = float(os.environ.get('LOCK_START_USD', '0.45'))   # desde qué PnL empezar a asegurar
+LOCK_RATIO = float(os.environ.get('LOCK_RATIO', '0.75'))          # % del máximo PnL a asegurar (0.8 = 80%)
 PROFIT_TARGET_USD = float(os.environ.get('PROFIT_TARGET_USD', '10'))
 
 PAIRS = [
-    {'symbol': 'BTCUSDT', 'fsym': 'BTC', 'dec': 3},
-    {'symbol': 'ETHUSDT', 'fsym': 'ETH', 'dec': 3},
-    {'symbol': 'SOLUSDT', 'fsym': 'SOL', 'dec': 1},
-    {"symbol": "XRPUSDT", "fsym": "XRP", "dec": 1},
-    {"symbol": "DOGEUSDT", "fsym": "DOGE", "dec": 0},
-    {"symbol": "ADAUSDT", "fsym": "ADA", "dec": 0},
+    {'symbol': 'BTCUSDT',  'fsym': 'BTC',  'dec': 3},
+    {'symbol': 'ETHUSDT',  'fsym': 'ETH',  'dec': 3},
+    {'symbol': 'SOLUSDT',  'fsym': 'SOL',  'dec': 1},
+    {'symbol': 'XRPUSDT',  'fsym': 'XRP',  'dec': 1},
+    {'symbol': 'DOGEUSDT', 'fsym': 'DOGE', 'dec': 0},
+    {'symbol': 'BNBUSDT',  'fsym': 'BNB',  'dec': 2},
 ]
 
 STATE_FILE = 'state.json'
@@ -153,15 +153,21 @@ def _update_live_pnl(state):
         ps = state.get(p['symbol'], {})
         pos = ps.get('position', 'FLAT')
         entry = ps.get('entry_price')
-        price = ps.get('price')
-        if pos in ('LONG', 'SHORT') and entry and price:
-            pct = (price - entry) / entry * 100 if pos == 'LONG' else (entry - price) / entry * 100
-            ta = ps.get('trade_amount_used') or TRADE_AMOUNT
-            ps['live_pnl_pct'] = round(pct, 3)
-            ps['live_pnl_usd'] = round(ta * LEVERAGE * pct / 100, 2)
-        else:
+
+        unrealized = ps.get('unrealized_pnl_binance')
+        if pos in ('LONG', 'SHORT') and unrealized is not None:
             ps['live_pnl_pct'] = 0.0
-            ps['live_pnl_usd'] = 0.0
+            ps['live_pnl_usd'] = round(float(unrealized), 2)
+        else:
+            price = ps.get('price')
+            if pos in ('LONG', 'SHORT') and entry and price:
+                pct = (price - entry) / entry * 100 if pos == 'LONG' else (entry - price) / entry * 100
+                ta = ps.get('trade_amount_used') or TRADE_AMOUNT
+                ps['live_pnl_pct'] = round(pct, 3)
+                ps['live_pnl_usd'] = round(ta * LEVERAGE * pct / 100, 2)
+            else:
+                ps['live_pnl_pct'] = 0.0
+                ps['live_pnl_usd'] = 0.0
 
 def save_state(state, now_str, balance=None, reason=''):
     global _state_cache, _balance_cache
@@ -262,7 +268,12 @@ def sync_positions_with_binance(state):
                     ps = state[sym]
                     if ps.get('position') != side:
                         print(f"[SYNC] {side} {sym} qty={size}")
-                        ps.update({'position': side, 'entry_price': float(p['entryPrice']), 'entry_qty': abs(size)})
+                        ps.update({
+                            'position': side,
+                            'entry_price': float(p['entryPrice']),
+                            'entry_qty': abs(size),
+                            'unrealized_pnl_binance': float(p.get('unRealizedProfit', 0)),
+    })
                 else:
                     if sym in state and state[sym].get('position') in ('LONG', 'SHORT'):
                         print(f"[SYNC] Closed {sym}")
@@ -1038,6 +1049,28 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
                        'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
                        'partial_closed': False, 'trade_amount_used': None})
 
+def is_momentum_exhausted(closes, e21, position='LONG'):
+    if len(closes) < 10 or e21[-1] is None:
+        return False
+    move_8 = (closes[-1] - closes[-9]) / closes[-9]
+    move_3 = (closes[-1] - closes[-4]) / closes[-4]
+    dist_ema21 = (closes[-1] - e21[-1]) / e21[-1]
+    if position == 'LONG':
+        if move_8 > 0.025 and move_3 < MOMENTUM_THRESHOLD:
+            print(f'  🚫 [MOMENTUM AGOTADO LONG] swing8={round(move_8*100,2)}% move3={round(move_3*100,2)}%')
+            return True
+        if dist_ema21 > 0.02:
+            print(f'  🚫 [SOBREEXTENDIDO LONG] {round(dist_ema21*100,2)}% sobre EMA21')
+            return True
+    if position == 'SHORT':
+        if move_8 < -0.025 and move_3 > -MOMENTUM_THRESHOLD:
+            print(f'  🚫 [MOMENTUM AGOTADO SHORT] swing8={round(move_8*100,2)}% move3={round(move_3*100,2)}%')
+            return True
+        if dist_ema21 < -0.02:
+            print(f'  🚫 [SOBREEXTENDIDO SHORT] {round(dist_ema21*100,2)}% bajo EMA21')
+            return True
+    return False
+
 # ── Proceso principal por par ──────────────────────────────────────────────────
 
 def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
@@ -1072,9 +1105,9 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             momentum_detected = True
             print(f' ⚡ [MOMENTUM] {round(price_change_pct * 100, 2)}% | ADX:{round(la_adx, 1)}')
 
-    sl_long = price - la * 0.55
+    sl_long = price - la * 0.65
     tp_long = price + la * 2.5
-    sl_short = price + la * 0.55
+    sl_short = price + la * 0.65
     tp_short = price - la * 2.5
 
     sig = get_signal(e21, e89, rsi14, RSI_MIN, RSI_MAX)
@@ -1089,7 +1122,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         strength = abs(macd - sigmacd)
         ok_long = macd > sigmacd and strength >= MIN_MACD_STRENGTH
         ok_short = macd < sigmacd and strength >= MIN_MACD_STRENGTH
-        print(f' [{sym}] MACD {macd_dir} | macd={round(macd, 2)} fuerza={round(strength, 2)} long_ok={ok_long} short_ok={ok_short}')
+        print(f' [{sym}] MACD {macd_dir} | macd={round(macd, 2)} fuerza={round(strength, 2)} long={ok_long} short={ok_short}')
 
     now_time = datetime.now(timezone.utc).strftime('%H:%M UTC')
     ps.update({
@@ -1105,11 +1138,9 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
     })
 
     pos = ps.get('position', 'FLAT')
-
+    print(f' [{sym}] {sig} | ${round(price, 2)} | RSI:{round(lr, 1)} | ADX:{round(la_adx, 1)} | pos:{pos}')
     if pos in ('LONG', 'SHORT') and ps.get('entry_price'):
         print(f' [{sym}] 📈 PnL live: {ps.get("live_pnl_pct", 0):+.2f}% (${ps.get("live_pnl_usd", 0):+.2f})')
-
-    print(f' [{sym}] {sig} | ${round(price, 2)} | RSI:{round(lr, 1)} | ADX:{round(la_adx, 1)} | pos:{pos}')
 
     action = {'closed': False, 'action': None}
 
@@ -1257,7 +1288,6 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         ps['last_signal'] = sig
         return ps
 
-    send_msg(build_msg(parts))
 
     late_long = sig == 'LONG_ACTIVE' and vcr <= MAX_CANDLES_LATE
     late_short = sig == 'SHORT_ACTIVE' and vcr <= MAX_CANDLES_LATE
@@ -1276,7 +1306,7 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             ps['last_signal'] = sig
             return ps
 
-        if la_adx < ADX_MIN:
+        if la_adx < ADX_MIN and not (momentum_detected and la_adx >= MOMENTUM_ADX_MIN):
             ps['last_signal'] = sig
             return ps
 
@@ -1320,9 +1350,16 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
             ps['last_signal'] = sig
             return ps
 
+
         if want_long:
+            if momentum_detected and is_momentum_exhausted(closes, e21, 'LONG'):
+                ps['last_signal'] = sig
+                return ps
             open_long(pair, ps, price, sl_long, tp_long, ta_now)
         elif want_short:
+            if momentum_detected and is_momentum_exhausted(closes, e21, 'SHORT'):
+                ps['last_signal'] = sig
+                return ps
             open_short(pair, ps, price, sl_short, tp_short, ta_now)
 
     ps['last_signal'] = sig
@@ -1370,7 +1407,7 @@ def run_bot_cycle():
     for pair in PAIRS:
         sym = pair['symbol']
         fsym = pair['fsym']
-        print(f'\\n-> {sym}')
+        print(f'\n-> {sym}')
         ps = get_pair_state(state, sym)
         if ps.get('position') == 'FLAT' and open_now >= MAX_OPEN_POS:
             print(' [SALTADO MAX_OPEN_POSITIONS]')
@@ -1397,11 +1434,11 @@ def run_bot_cycle():
     if cycle_count >= REPORT_EVERY_N_CYCLES:
         send_session_report(state, now_str, balance, today)
         cycle_count = 0
-        print(f'\\n📊 Reporte enviado (ciclo {REPORT_EVERY_N_CYCLES})')
+        print(f'\n📊 Reporte enviado (ciclo {REPORT_EVERY_N_CYCLES})')
     else:
-        print(f'\\n📊 Próximo reporte en {REPORT_EVERY_N_CYCLES - cycle_count} ciclos (~{(REPORT_EVERY_N_CYCLES - cycle_count) * 3} min)')
+        print(f'\n📊 Próximo reporte en {REPORT_EVERY_N_CYCLES - cycle_count} ciclos (~{(REPORT_EVERY_N_CYCLES - cycle_count) * 3} min)')
 
-    print(f'\\n✓ Completado — {now_str}')
+    print(f'\n✓ Completado — {now_str}')
     has_positions = count_open_positions(state) > 0
     return has_positions
 
@@ -1434,7 +1471,7 @@ def main():
 
             elapsed = 0
             while elapsed < interval and running:
-                sleep_time = min(10, interval - elapsed)
+                sleep_time = min(5, interval - elapsed)
                 time.sleep(sleep_time)
                 elapsed += sleep_time
 
