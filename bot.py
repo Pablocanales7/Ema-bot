@@ -15,7 +15,7 @@ import sys
 FEE_RATE = 0.0005
 FEE_ROUNDTRIP = 0.0010
 FEE_BUFFER_PCT = 0.10
-
+MIN_REVERSAL_PNL = 0.5
 cycle_count = 0
 REPORT_EVERY_N_CYCLES = 10
 
@@ -29,9 +29,9 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-CHECK_INTERVAL_WITH_POSITIONS = 60
-CHECK_INTERVAL_NO_POSITIONS = 600
-CHECK_INTERVAL_LOCKED = int(os.environ.get('CHECK_INTERVAL_LOCKED', '15'))
+CHECK_INTERVAL_WITH_POSITIONS = int(os.environ.get('CHECK_INTERVAL_WITH_POSITIONS', '20'))
+CHECK_INTERVAL_NO_POSITIONS = int(os.environ.get('CHECK_INTERVAL_NO_POSITIONS', '180'))
+CHECK_INTERVAL_LOCKED = int(os.environ.get('CHECK_INTERVAL_LOCKED', '5'))
 
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT = os.environ['TELEGRAM_CHAT_ID']
@@ -50,6 +50,8 @@ TRAIL_MULT = float(os.environ.get('TRAIL_ATR_MULT', '0.6'))
 ADX_MIN = float(os.environ.get('ADX_MIN', '18'))
 DAILY_LOSS_LIMIT = float(os.environ.get('DAILY_LOSS_LIMIT', '-15'))
 SL_COOLDOWN_HOURS = int(os.environ.get('SL_COOLDOWN_HOURS', '1'))
+SL_COOLDOWN_SOFT_MINUTES = int(os.environ.get('SL_COOLDOWN_SOFT_MINUTES', '10'))
+SL_HARD_THRESHOLD_USD = float(os.environ.get('SL_HARD_THRESHOLD_USD', '0.05'))
 VOL_MULT = float(os.environ.get('VOL_MULT', '1.2'))
 USE_MTF = os.environ.get('USE_MTF', 'false').lower() == 'true'
 USE_VOLUME_FILTER = os.environ.get('USE_VOLUME_FILTER', 'false').lower() == 'true'
@@ -63,17 +65,17 @@ TIMEFRAME_HOURS = int(os.environ.get('TIMEFRAME_HOURS', '1'))
 MIN_MACD_STRENGTH = float(os.environ.get('MIN_MACD_STRENGTH', '15'))
 MACD_WEAKENING_THRESHOLD = float(os.environ.get('MACD_WEAKENING_THRESHOLD', '0.35'))
 MIN_PROFIT_MACD_EXIT = 0.3
-LOCK_START_USD = float(os.environ.get('LOCK_START_USD', '0.45'))   # desde qué PnL empezar a asegurar
-LOCK_RATIO = float(os.environ.get('LOCK_RATIO', '0.75'))          # % del máximo PnL a asegurar (0.8 = 80%)
+
+LOCK_START_USD = float(os.environ.get('LOCK_START_USD', '0.22'))  # activa lock temprano
+LOCK_MIN_USD = float(os.environ.get('LOCK_MIN_USD', '0.20'))      # mínimo a asegurar
+LOCK_RATIO = float(os.environ.get('LOCK_RATIO', '0.88'))          # lock agresivo del max profit
+LOCK_STEP_USD = float(os.environ.get('LOCK_STEP_USD', '0.05'))    # escalera por tramos
 PROFIT_TARGET_USD = float(os.environ.get('PROFIT_TARGET_USD', '10'))
 
 PAIRS = [
     {'symbol': 'BTCUSDT',  'fsym': 'BTC',  'dec': 3},
     {'symbol': 'ETHUSDT',  'fsym': 'ETH',  'dec': 3},
     {'symbol': 'SOLUSDT',  'fsym': 'SOL',  'dec': 1},
-    {'symbol': 'XRPUSDT',  'fsym': 'XRP',  'dec': 1},
-    {'symbol': 'DOGEUSDT', 'fsym': 'DOGE', 'dec': 0},
-    {'symbol': 'BNBUSDT',  'fsym': 'BNB',  'dec': 2},
 ]
 
 STATE_FILE = 'state.json'
@@ -90,6 +92,7 @@ EMPTY_STATE = {
     'trades_date': None,
     'session_pnl': 0.0,
     'last_sl_time': None,
+    'last_sl_soft_time': None,
     'trade_amount_used': None,
     'signal': None,
     'price': None,
@@ -268,11 +271,11 @@ def sync_positions_with_binance(state):
                     ps = state[sym]
                     if ps.get('position') != side:
                         print(f"[SYNC] {side} {sym} qty={size}")
-                        ps.update({
-                            'position': side,
-                            'entry_price': float(p['entryPrice']),
-                            'entry_qty': abs(size),
-                            'unrealized_pnl_binance': float(p.get('unRealizedProfit', 0)),
+                    ps.update({
+                        'position': side,
+                        'entry_price': float(p['entryPrice']),
+                        'entry_qty': abs(size),
+                        'unrealized_pnl_binance': float(p.get('unRealizedProfit', 0)),
     })
                 else:
                     if sym in state and state[sym].get('position') in ('LONG', 'SHORT'):
@@ -329,41 +332,92 @@ def market_order(symbol, side, qty):
 # ── Datos de mercado ───────────────────────────────────────────────────────────
 
 def fetchcandles(symbol, aggregate=1, limit=200):
-    url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=USDT&limit={limit}&aggregate={aggregate}&e=Binance"
+    interval_map = {
+        1: '1h',
+        2: '2h',
+        4: '4h',
+        6: '6h',
+        8: '8h',
+        12: '12h',
+        24: '1d'
+    }
+
+    interval = interval_map.get(aggregate, '1h')
+    binance_symbol = f"{symbol}USDT"
+    url = "https://fapi.binance.com/fapi/v1/klines"
+    params = {
+        'symbol': binance_symbol,
+        'interval': interval,
+        'limit': limit
+    }
+
     try:
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
+        r = requests.get(url, params=params, timeout=15)
+
+        if not r.ok:
+            print(f"⚠️ [{symbol}] Binance klines HTTP {r.status_code}: {r.text[:300]}")
+            return [], [], [], []
+
         data = r.json()
-        if 'Data' not in data or 'Data' not in data['Data']:
-            print(f"⚠️ [{symbol}] API sin datos válidos. Reintentando en próximo ciclo.")
+
+        if isinstance(data, dict) and 'code' in data:
+            print(f"⚠️ [{symbol}] Binance klines error: {data}")
             return [], [], [], []
-        raw = data['Data']['Data']
-        if len(raw) < 50:
-            print(f"⚠️ [{symbol}] Datos insuficientes ({len(raw)} velas)")
+
+        if not isinstance(data, list):
+            print(f"⚠️ [{symbol}] Respuesta inválida de Binance")
             return [], [], [], []
+
+        if len(data) < 50:
+            print(f"⚠️ [{symbol}] Datos insuficientes ({len(data)} velas)")
+            return [], [], [], []
+
         return (
-            [float(c['close']) for c in raw],
-            [float(c['high']) for c in raw],
-            [float(c['low']) for c in raw],
-            [float(c['volumeto']) for c in raw]
+            [float(c[4]) for c in data],  # close
+            [float(c[2]) for c in data],  # high
+            [float(c[3]) for c in data],  # low
+            [float(c[7]) for c in data]   # quote asset volume
         )
+
     except Exception as e:
-        print(f"❌ [{symbol}] Error fetchcandles: {e}")
+        print(f"❌ [{symbol}] Error fetchcandles Binance: {type(e).__name__}: {e}")
         return [], [], [], []
 
+
 def fetchdailycandles(symbol, limit=100):
-    url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym={symbol}&tsym=USDT&limit={limit}&e=Binance"
+    binance_symbol = f"{symbol}USDT"
+    url = "https://fapi.binance.com/fapi/v1/klines"
+    params = {
+        'symbol': binance_symbol,
+        'interval': '1d',
+        'limit': limit
+    }
+
     try:
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if 'Data' not in data or 'Data' not in data['Data']:
-            print(f"⚠️ [{symbol}] API diaria sin datos válidos")
+        r = requests.get(url, params=params, timeout=15)
+
+        if not r.ok:
+            print(f"⚠️ [{symbol}] Binance daily HTTP {r.status_code}: {r.text[:300]}")
             return []
-        raw = data['Data']['Data']
-        return [float(c['close']) for c in raw]
+
+        data = r.json()
+
+        if isinstance(data, dict) and 'code' in data:
+            print(f"⚠️ [{symbol}] Binance daily error: {data}")
+            return []
+
+        if not isinstance(data, list):
+            print(f"⚠️ [{symbol}] Respuesta diaria inválida de Binance")
+            return []
+
+        if len(data) == 0:
+            print(f"⚠️ [{symbol}] Binance daily sin datos")
+            return []
+
+        return [float(c[4]) for c in data]  # close
+
     except Exception as e:
-        print(f"❌ [{symbol}] Error fetchdailycandles: {e}")
+        print(f"❌ [{symbol}] Error fetchdailycandles Binance: {type(e).__name__}: {e}")
         return []
 
 # ── Indicadores ────────────────────────────────────────────────────────────────
@@ -555,17 +609,27 @@ def daily_loss_exceeded(state, today):
     return False, total_pnl
 
 def sl_cooldown_active(ps, now):
-    last_sl = ps.get('last_sl_time')
-    if not last_sl:
-        return False, 0
-    try:
-        sl_time = datetime.fromisoformat(last_sl)
-        hours_since = (now - sl_time).total_seconds() / 3600
-        if hours_since < SL_COOLDOWN_HOURS:
-            return True, round(SL_COOLDOWN_HOURS - hours_since, 1)
-    except Exception:
-        pass
-    return False, 0
+    last_hard = ps.get('last_sl_time')
+    if last_hard:
+        try:
+            sl_time = datetime.fromisoformat(last_hard)
+            hours_since = (now - sl_time).total_seconds() / 3600
+            if hours_since < SL_COOLDOWN_HOURS:
+                return True, round(SL_COOLDOWN_HOURS - hours_since, 2), 'hard'
+        except Exception:
+            pass
+
+    last_soft = ps.get('last_sl_soft_time')
+    if last_soft:
+        try:
+            soft_time = datetime.fromisoformat(last_soft)
+            minutes_since = (now - soft_time).total_seconds() / 60
+            if minutes_since < SL_COOLDOWN_SOFT_MINUTES:
+                return True, round(SL_COOLDOWN_SOFT_MINUTES - minutes_since, 1), 'soft'
+        except Exception:
+            pass
+
+    return False, 0, None
 
 def should_close_profit(position, entry, price):
     if not entry:
@@ -659,7 +723,8 @@ def open_long(pair, ps, price, sl, tp, ta):
             'position': 'LONG', 'entry_price': price, 'entry_qty': qty,
             'initial_sl': sl, 'tp_target': tp, 'trailing_sl': sl,
             'partial_closed': False, 'trades_today': ps.get('trades_today', 0) + 1,
-            'trade_amount_used': ta
+            'trade_amount_used': ta,
+            'max_pnl_usd': 0.0,
         })
         send_msg(build_msg([
             f'🟢 LONG abierto — {fsym}/USDT',
@@ -715,7 +780,8 @@ def open_short(pair, ps, price, sl, tp, ta):
             'position': 'SHORT', 'entry_price': price, 'entry_qty': qty,
             'initial_sl': sl, 'tp_target': tp, 'trailing_sl': sl,
             'partial_closed': False, 'trades_today': ps.get('trades_today', 0) + 1,
-            'trade_amount_used': ta
+            'trade_amount_used': ta,
+            'max_pnl_usd': 0.0,
         })
         send_msg(build_msg([
             f'🔴 SHORT abierto — {fsym}/USDT',
@@ -799,18 +865,38 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
         max_pnl = pnl_u
         ps['max_pnl_usd'] = max_pnl
 
+    lock_active = False
+    lock_pnl = 0.0
+    sl_lock_price = None
+    print(f"DEBUG {pair['fsym']} max_pnl={max_pnl:.3f} | LOCK_START={LOCK_START_USD}")
     if max_pnl >= LOCK_START_USD:
-        lock_pnl = max_pnl * LOCK_RATIO
+        stepped_max = LOCK_START_USD + (int((max_pnl - LOCK_START_USD) / LOCK_STEP_USD) * LOCK_STEP_USD)
+        lock_pnl = max(LOCK_MIN_USD, stepped_max * LOCK_RATIO)
+
+        if max_pnl > LOCK_MIN_USD:
+            lock_pnl = min(lock_pnl, max_pnl - 0.01)
+
         lock_pct = lock_pnl * 100 / (ta * LEVERAGE)
         sl_lock_price = entry * (1 + lock_pct / 100)
-        ps['trailing_sl'] = max(ps['trailing_sl'], sl_lock_price)
-        trail = ps['trailing_sl']
-        print(f"🔒 Escalera LONG {pair['fsym']}: max_pnl={max_pnl:.2f} lock={lock_pnl:.2f} SL_lock={sl_lock_price:.2f}")
+        lock_active = True
 
     new_trail_atr = price - atr * TRAIL_MULT
-    if new_trail_atr > ps['trailing_sl']:
-        ps['trailing_sl'] = new_trail_atr
-        trail = new_trail_atr
+
+    if lock_active:
+        final_trail = max(ps['trailing_sl'], sl_lock_price, new_trail_atr)
+        reason = 'LOCK' if final_trail == sl_lock_price else 'ATR' if final_trail == new_trail_atr else 'PREV'
+        ps['trailing_sl'] = final_trail
+        trail = final_trail
+        print(
+            f"🔒 Escalera LONG {pair['fsym']}: "
+            f"max_pnl={max_pnl:.2f} stepped={stepped_max:.2f} "
+            f"lock={lock_pnl:.2f} sl_lock={sl_lock_price:.4f} "
+            f"atr_trail={new_trail_atr:.4f} final={final_trail:.4f} via={reason}"
+        )
+    else:
+        if new_trail_atr > ps['trailing_sl']:
+            ps['trailing_sl'] = new_trail_atr
+            trail = new_trail_atr
 
     halfway = entry + (tp - entry) * 0.5
     if not partial and price >= halfway:
@@ -824,8 +910,17 @@ def manage_open(pair, ps, price, atr, now_str, now_dt):
             close_position(pair, ps, price, '50% TP', partial=True)
         return {'closed': True, 'action': 'partial_tp'}
 
+
     if price <= ps['trailing_sl']:
-        ps['last_sl_time'] = now_dt.isoformat()
+        if pnl_u <= SL_HARD_THRESHOLD_USD:
+            ps['last_sl_time'] = now_dt.isoformat()
+            cooldown_label = 'hard'
+            print(f"🛑 SL DURO LONG {pair['fsym']} | pnl={pnl_u:.2f}")
+        else:
+            ps['last_sl_soft_time'] = now_dt.isoformat()
+            cooldown_label = 'soft'
+            print(f"🛡️ SL SUAVE LONG {pair['fsym']} | pnl={pnl_u:.2f}")
+
         send_msg(build_msg([
             f'🛑 TRAILING SL LONG — {pair["fsym"]}/USDT',
             f' Precio: ${round(price, 2)} | Trail: ${round(ps["trailing_sl"], 2)}'
@@ -859,21 +954,42 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
 
     max_pnl = ps.get('max_pnl_usd', 0.0)
     if pnl_u > max_pnl:
-        max_pnl = pnl_u
-        ps['max_pnl_usd'] = max_pnl
+         max_pnl = pnl_u
+         ps['max_pnl_usd'] = max_pnl
 
+    lock_active = False
+    lock_pnl = 0.0
+    sl_lock_price = None
+    print(f"DEBUG {pair['fsym']} max_pnl={max_pnl:.3f} | LOCK_START={LOCK_START_USD}")
     if max_pnl >= LOCK_START_USD:
-        lock_pnl = max_pnl * LOCK_RATIO
+        stepped_max = LOCK_START_USD + (int((max_pnl - LOCK_START_USD) / LOCK_STEP_USD) * LOCK_STEP_USD)
+        lock_pnl = max(LOCK_MIN_USD, stepped_max * LOCK_RATIO)
+
+        if max_pnl > LOCK_MIN_USD:
+            lock_pnl = min(lock_pnl, max_pnl - 0.01)
+
         lock_pct = lock_pnl * 100 / (ta * LEVERAGE)
         sl_lock_price = entry * (1 - lock_pct / 100)
-        ps['trailing_sl'] = min(ps['trailing_sl'], sl_lock_price)
-        trail = ps['trailing_sl']
-        print(f"🔒 Escalera SHORT {pair['fsym']}: max_pnl={max_pnl:.2f} lock={lock_pnl:.2f} SL_lock={sl_lock_price:.2f}")
+        lock_active = True
 
     new_trail_atr = price + atr * TRAIL_MULT
-    if new_trail_atr < ps['trailing_sl']:
-        ps['trailing_sl'] = new_trail_atr
-        trail = new_trail_atr
+
+    if lock_active:
+        final_trail = min(ps['trailing_sl'], sl_lock_price, new_trail_atr)
+        reason = 'LOCK' if final_trail == sl_lock_price else 'ATR' if final_trail == new_trail_atr else 'PREV'
+        ps['trailing_sl'] = final_trail
+        trail = final_trail
+        print(
+            f"🔒 Escalera SHORT {pair['fsym']}: "
+            f"max_pnl={max_pnl:.2f} stepped={stepped_max:.2f} "
+            f"lock={lock_pnl:.2f} sl_lock={sl_lock_price:.4f} "
+            f"atr_trail={new_trail_atr:.4f} final={final_trail:.4f} via={reason}"
+        )
+    else:
+        if new_trail_atr < ps['trailing_sl']:
+            ps['trailing_sl'] = new_trail_atr
+            trail = new_trail_atr
+
 
     halfway = entry - (entry - tp) * 0.5
     if not partial and price <= halfway:
@@ -888,7 +1004,13 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
         return {'closed': True, 'action': 'partial_tp'}
 
     if price >= ps['trailing_sl']:
-        ps['last_sl_time'] = now_dt.isoformat()
+        if pnl_u <= SL_HARD_THRESHOLD_USD:
+            ps['last_sl_time'] = now_dt.isoformat()
+            print(f"🛑 SL DURO SHORT {pair['fsym']} | pnl={pnl_u:.2f}")
+        else:
+            ps['last_sl_soft_time'] = now_dt.isoformat()
+            print(f"🛡️ SL SUAVE SHORT {pair['fsym']} | pnl={pnl_u:.2f}")
+
         send_msg(build_msg([
             f'🛑 TRAILING SL SHORT — {pair["fsym"]}/USDT',
             f' Precio: ${round(price, 2)} | Trail: ${round(ps["trailing_sl"], 2)}'
@@ -907,7 +1029,7 @@ def manage_short(pair, ps, price, atr, now_str, now_dt):
     return {'closed': False, 'action': None}
 
 # ── Cierres por BTC ────────────────────────────────────────────────────────────
-
+MIN_REVERSAL_PNL = 0.5  # Umbral mínimo % para cierre por BTC
 def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now_dt):
     if btc_bull_now == btc_bull_prev:
         return
@@ -935,7 +1057,7 @@ def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now
             pnl_pct = (entry - price) / entry * 100
         ta = ps.get('trade_amount_used') or TRADE_AMOUNT
         pnl_u = ta * LEVERAGE * pnl_pct / 100
-        if btc_bull_now and pos == 'SHORT' and pnl_pct > 0:
+        if btc_bull_now and pos == 'SHORT' and pnl_pct > MIN_REVERSAL_PNL:
             send_msg(build_msg([
                 f'🔄 CAMBIO DE TENDENCIA — {pair["fsym"]}/USDT',
                 f'📊 BTC cambió a ALCISTA → Cerrando SHORT en ganancia',
@@ -950,7 +1072,7 @@ def check_market_reversal_exits(state, btc_bull_now, btc_bull_prev, now_str, now
                            'initial_sl': None, 'tp_target': None, 'trailing_sl': None,
                            'partial_closed': False, 'trade_amount_used': None,
                            'signal': 'WAIT', 'last_signal': 'WAIT'})
-        elif not btc_bull_now and pos == 'LONG' and pnl_pct > 0:
+        elif not btc_bull_now and pos == 'LONG' and pnl_pct > MIN_REVERSAL_PNL:
             send_msg(build_msg([
                 f'🔄 CAMBIO DE TENDENCIA — {pair["fsym"]}/USDT',
                 f'📊 BTC cambió a BAJISTA → Cerrando LONG en ganancia',
@@ -995,12 +1117,13 @@ def check_btc_long_signal_exits(state, btc_signal, now_str, now_dt):
         pnl_u = ta * LEVERAGE * pnl_pct / 100
         if pnl_pct <= 0:
             continue
-        send_msg(build_msg([
-            f'🔄 BTC SEÑAL LONG — CIERRE SHORT {fsym}/USDT',
-            '📊 BTC con señal alcista → cerrando SHORT en ganancia',
-            f'💵 Entrada: ${round(entry, 2)} | Actual: ${round(price, 2)}',
-            f'💰 PnL: +{round(pnl_pct, 2)}% (+${round(pnl_u, 2)} USDT)',
-            f'⏰ {now_str}',
+        if pnl_pct > MIN_REVERSAL_PNL:
+            send_msg(build_msg([
+                f'🔄 BTC SEÑAL LONG — CIERRE SHORT {fsym}/USDT',
+                '📊 BTC con señal alcista → cerrando SHORT en ganancia',
+                f'💵 Entrada: ${round(entry, 2)} | Actual: ${round(price, 2)}',
+                f'💰 PnL: +{round(pnl_pct, 2)}% (+${round(pnl_u, 2)} USDT)',
+                f'⏰ {now_str}',
         ]))
         if AUTO_TRADE and API_KEY:
             close_short(pair, ps, price, 'BTC señal LONG - ganancia asegurada')
@@ -1035,12 +1158,13 @@ def check_btc_short_signal_exits(state, btc_signal, now_str, now_dt):
         pnl_u = ta * LEVERAGE * pnl_pct / 100
         if pnl_pct <= 0:
             continue
-        send_msg(build_msg([
-            f'🔄 BTC SEÑAL SHORT — CIERRE LONG {fsym}/USDT',
-            '📊 BTC con señal bajista → cerrando LONG en ganancia',
-            f'💵 Entrada: ${round(entry, 2)} | Actual: ${round(price, 2)}',
-            f'💰 PnL: +{round(pnl_pct, 2)}% (+${round(pnl_u, 2)} USDT)',
-            f'⏰ {now_str}',
+        if pnl_pct > MIN_REVERSAL_PNL:
+            send_msg(build_msg([
+                f'🔄 BTC SEÑAL SHORT — CIERRE LONG {fsym}/USDT',
+                '📊 BTC con señal bajista → cerrando LONG en ganancia',
+                f'💵 Entrada: ${round(entry, 2)} | Actual: ${round(price, 2)}',
+                f'💰 PnL: +{round(pnl_pct, 2)}% (+${round(pnl_u, 2)} USDT)',
+                f'⏰ {now_str}',
         ]))
         if AUTO_TRADE and API_KEY:
             close_position(pair, ps, price, 'BTC señal SHORT - ganancia asegurada')
@@ -1297,12 +1421,13 @@ def process_pair(pair, ps, today, now_str, now_dt, btc_bull, balance, state):
         want_long = sig in ('BUY', 'LONG_ACTIVE', 'WAIT_RSI') and pos == 'FLAT' and closes[-1] > closes[-4]
         want_short = sig in ('SELL', 'SHORT_ACTIVE', 'WAIT_RSI_SHORT') and pos == 'FLAT' and closes[-1] < closes[-4]
     else:
-        want_long = (sig == 'BUY' or sig == 'LONG_ACTIVE' or late_long) and pos == 'FLAT'
-        want_short = (sig == 'SELL' or sig == 'SHORT_ACTIVE' or late_short) and pos == 'FLAT'
+        want_long = (sig == 'BUY' or sig == 'LONG_ACTIVE' or late_long) and pos == 'FLAT' and ok_long and lr < 70
+        want_short = (sig == 'SELL' or sig == 'SHORT_ACTIVE' or late_short) and pos == 'FLAT' and ok_short and lr > 30
 
     if AUTO_TRADE and API_KEY and (want_long or want_short):
-        cooldown_active, _ = sl_cooldown_active(ps, now_dt)
+        cooldown_active, time_left, cooldown_type = sl_cooldown_active(ps, now_dt)
         if cooldown_active:
+            print(f" [{sym}] 🚫 SL cooldown {cooldown_type} activo ({time_left}restantes)")
             ps['last_signal'] = sig
             return ps
 
@@ -1447,8 +1572,9 @@ def main():
     print('=' * 70)
     print('🤖 EMA Bot v10.3 - Iniciado')
     print('=' * 70)
-    print(f'Check con posiciones: {CHECK_INTERVAL_WITH_POSITIONS}s (3 min)')
-    print(f'Check sin posiciones: {CHECK_INTERVAL_NO_POSITIONS}s (15 min)')
+    print(f'Check con posiciones: {CHECK_INTERVAL_WITH_POSITIONS}s')
+    print(f'Check sin posiciones: {CHECK_INTERVAL_NO_POSITIONS}s')
+    print(f'Check con escalera activa: {CHECK_INTERVAL_LOCKED}s')
     print('=' * 70)
 
     while running:
